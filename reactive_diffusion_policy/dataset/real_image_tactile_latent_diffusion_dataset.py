@@ -5,6 +5,7 @@ from reactive_diffusion_policy.model.vae.model import VAE
 from reactive_diffusion_policy.dataset.real_image_tactile_dataset import RealImageTactileDataset
 from reactive_diffusion_policy.model.common.normalizer import LinearNormalizer, SingleFieldLinearNormalizer
 
+# 继承RealImageTactileDataset，解析 shape_meta，从 zarr 加载数据，滑动窗口采样，构建 obs/extended_obs/action，__getitem__ 返回每个 batch
 class RealImageTactileLatentDiffusionDataset(RealImageTactileDataset):
     def __init__(self,
                  at: VAE,
@@ -16,6 +17,9 @@ class RealImageTactileLatentDiffusionDataset(RealImageTactileDataset):
         self.use_latent_action_before_vq = use_latent_action_before_vq
 
     def get_normalizer(self, **kwargs) -> LinearNormalizer:
+        """ 重写 get_normalizer()，在计算归一化参数时额外用 AT encoder 把所有 action 编码成 latent_action，并计算 latent_action 的归一化统计量
+            这是因为 LDP 的训练目标是在潜空间 Z 做扩散，需要提前知道 Z 的分布范围来做归一化，而普通 DP 不需要这一步。
+        """
         normalizer = super().get_normalizer(**kwargs)
 
         latent_action_all = []

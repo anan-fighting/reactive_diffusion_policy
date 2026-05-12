@@ -59,6 +59,7 @@ class RealImageTactileDataset(BaseImageDataset):
                 extended_lowdim_keys.append(key)
 
         zarr_path = os.path.join(dataset_path, 'replay_buffer.zarr')
+        # 最终合并，只从 zarr 加载这些 key
         zarr_load_keys = set(rgb_keys + lowdim_keys + extended_rgb_keys + extended_lowdim_keys + ['action'])
         zarr_load_keys = list(filter(lambda key: "wrt" not in key, zarr_load_keys))
         replay_buffer = ReplayBuffer.copy_from_path(

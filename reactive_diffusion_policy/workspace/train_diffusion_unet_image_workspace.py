@@ -45,15 +45,20 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         np.random.seed(seed)
         random.seed(seed)
 
-        # configure model
+        # configure model 根据配置文件动态实例化 DiffusionUnetImagePolicy 模型
+        # 根据policy中的_target_
         self.model: DiffusionUnetImagePolicy = hydra.utils.instantiate(cfg.policy)
-
+        print(f"--- Instantiated policy class: {type(self.model).__name__}")
+        print(f"--- From _target_: {cfg.policy._target_}")
+        # 可选：深拷贝一份 EMA 模型（训练稳定性用）
         self.ema_model: DiffusionUnetImagePolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
         # configure training state
-
+        # 配置优化器
+        #   - 如果用 timm 编码器：对视觉编码器单独设学习率/权重衰减
+        #   - 否则（默认 ResNet,yaml配置文件里面有）：用 AdamW，多卡时自动线性放大学习率
         if 'timm' in cfg.policy.obs_encoder._target_:
             if cfg.training.layer_decay < 1.0:
                 assert not cfg.policy.obs_encoder.use_lora
@@ -110,13 +115,13 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             self.optimizer = hydra.utils.instantiate(
                 optimizer_cfg, params=self.model.parameters())
 
-        # configure training state
+        # configure training state 初始化训练状态计数器
         self.global_step = 0
         self.epoch = 0
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
-
+        # 初始化 Accelerator（管理多卡/wandb日志）
         accelerator = Accelerator(log_with='wandb')
         wandb_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
         wandb_cfg.pop('project')
@@ -126,19 +131,25 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             init_kwargs={"wandb": wandb_cfg}
         )
 
-        # resume training
+        # resume training 断点续训：检查是否有上次保存的 checkpoint
         if cfg.training.resume:
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
                 accelerator.print(f"Resuming from checkpoint {lastest_ckpt_path}")
                 self.load_checkpoint(path=lastest_ckpt_path)
 
-        # configure dataset
+        # configure dataset 构建 Dataset → DataLoader（训练集 + 验证集）
         dataset: BaseImageDataset
+        # 以reactive_diffusion_policy/config/train_latent_diffusion_unet_real_image_workspace.yaml为例
+        # 用yaml里面的task: real_peel_image_gelsight_emb_ldp_24fps加载task/real_peel_image_gelsight_emb_ldp_24fps.yaml
+        # 用yaml里面的dataset: _target_加载reactive_diffusion_policy.dataset.real_image_tactile_latent_diffusion_dataset.RealImageTactileLatentDiffusionDataset类并实例化
         dataset = hydra.utils.instantiate(cfg.task.dataset)
+        print(f"--- Instantiated dataset class: {type(dataset).__name__}")
+        print(f"--- From _target_: {cfg.task.dataset._target_}")
         assert isinstance(dataset, BaseImageDataset)
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
         
+        # 计算归一化参数 normalizer（主进程算，广播给其他进程）
         # normalizer = dataset.get_normalizer()
         # compute normalizer on the main process and save to disk
         normalizer_path = os.path.join(self.output_dir, 'normalizer.pkl')
@@ -159,7 +170,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
 
-        # configure lr scheduler
+        # configure lr scheduler 配置学习率调度器（warmup + cosine/linear衰减）
         lr_scheduler = get_scheduler(
             cfg.training.lr_scheduler,
             optimizer=self.optimizer,
@@ -172,7 +183,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             last_epoch=self.global_step-1
         )
 
-        # configure ema
+        # configure ema 配置 EMA 模型（指数移动平均，让权重更平滑）
         ema: EMAModel = None
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(
@@ -191,13 +202,13 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         #     }
         # )
 
-        # configure checkpoint
+        # configure checkpoint 配置 TopK Checkpoint 管理器（只保存最好的K个ckpt）
         topk_manager = TopKCheckpointManager(
             save_dir=os.path.join(self.output_dir, 'checkpoints'),
             **cfg.checkpoint.topk
         )
 
-        # accelerator
+        # accelerator accelerator.prepare()  ← 把 model/optimizer/dataloader 都包装成多卡版本
         train_dataloader, val_dataloader, self.model, self.optimizer, lr_scheduler = accelerator.prepare(
             train_dataloader, val_dataloader, self.model, self.optimizer, lr_scheduler
         )
@@ -235,6 +246,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                     self.model.obs_encoder.eval()
                     self.model.obs_encoder.requires_grad_(False)
 
+                # 【训练阶段】
                 train_losses = list()
                 with tqdm.tqdm(train_dataloader, desc=f"Training epoch {self.epoch}", 
                         leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
@@ -245,19 +257,19 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                             train_sampling_batch = batch
 
                         # compute loss
-                        raw_loss = self.model(batch)
+                        raw_loss = self.model(batch) # 前向传播，计算扩散损失
                         loss = raw_loss / cfg.training.gradient_accumulate_every
-                        accelerator.backward(loss)
+                        accelerator.backward(loss) # 反向传播
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            self.optimizer.step()
+                            self.optimizer.step() # 梯度更新（支持梯度累积）
                             self.optimizer.zero_grad()
-                            lr_scheduler.step()
+                            lr_scheduler.step() # 学习率更新
                         
-                        # update ema
+                        # update ema EMA权重更新
                         if cfg.training.use_ema:
-                            ema.step(accelerator.unwrap_model(self.model))
+                            ema.step(accelerator.unwrap_model(self.model)) # EMA权重更新
 
                         # logging
                         raw_loss_cpu = raw_loss.item()
@@ -293,6 +305,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 policy.eval()
 
                 # run validation
+                # 【验证阶段】（每 val_every 个 epoch 执行一次）
                 if cfg.task.dataset.val_ratio > 0 and (self.epoch % cfg.training.val_every) == 0 and accelerator.is_main_process:
                     with torch.no_grad():
                         val_losses = list()
@@ -300,7 +313,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                                 leave=False, mininterval=cfg.training.tqdm_interval_sec) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
                                 batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                loss = self.model(batch)
+                                loss = self.model(batch) # 只前向，不反向
                                 val_losses.append(loss)
                                 if (cfg.training.max_val_steps is not None) \
                                     and batch_idx >= (cfg.training.max_val_steps-1):
@@ -311,6 +324,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                             step_log['val_loss'] = val_loss
 
                 # run diffusion sampling on a training batch
+                # 【采样评估】（每 sample_every 个 epoch 执行一次） 取一个训练 batch
                 if (self.epoch % cfg.training.sample_every) == 0:
                     with torch.no_grad():
                         # sample trajectory from training set, and evaluate difference
@@ -325,11 +339,12 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                                                            extended_obs_dict=extended_obs_dict,
                                                            dataset_obs_temporal_downsample_ratio=dataset_obs_temporal_downsample_ratio)
                         else:
-                            result = policy.predict_action(obs_dict)
+                            result = policy.predict_action(obs_dict) # 完整推理
                         pred_action = result['action_pred']
 
                         all_preds, all_gt = accelerator.gather_for_metrics((pred_action, gt_action))
 
+                        # 记录误差
                         mse = torch.nn.functional.mse_loss(all_preds, all_gt)
                         step_log['train_action_mse_error'] = mse.item()
                         del batch
@@ -340,13 +355,13 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         del mse
                 accelerator.wait_for_everyone()
                 
-                # checkpoint
+                # checkpoint 【存档】（每 checkpoint_every 个 epoch 执行一次）
                 if (self.epoch % cfg.training.checkpoint_every) == 0 and accelerator.is_main_process:
                     # unwrap the model to save ckpt
                     model_ddp = self.model
                     self.model = accelerator.unwrap_model(self.model)
 
-                    # checkpointing
+                    # checkpointing 保存最新 ckpt
                     if cfg.checkpoint.save_last_ckpt:
                         self.save_checkpoint()
                     if cfg.checkpoint.save_last_snapshot:
@@ -361,6 +376,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                     # We can't copy the last checkpoint here
                     # since save_checkpoint uses threads.
                     # therefore at this point the file might have been empty!
+                    # 如果指标够好，再保存 topk ckpt
                     topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
 
                     if topk_ckpt_path is not None:
