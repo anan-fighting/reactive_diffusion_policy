@@ -62,8 +62,10 @@ class RealImageTactileDataset(BaseImageDataset):
         # 最终合并，只从 zarr 加载这些 key
         zarr_load_keys = set(rgb_keys + lowdim_keys + extended_rgb_keys + extended_lowdim_keys + ['action'])
         zarr_load_keys = list(filter(lambda key: "wrt" not in key, zarr_load_keys))
-        replay_buffer = ReplayBuffer.copy_from_path(
-            zarr_path, keys=zarr_load_keys)
+        # 使用 create_from_path 直接从磁盘按需读取（lazy），避免大数据集一次性全部加载进内存导致 OOM
+        # copy_from_path 会将所有数据解压缩后全部加载进 RAM（200k帧图像约 46GB），内存不足时会报 MemoryError
+        replay_buffer = ReplayBuffer.create_from_path(
+            zarr_path, mode='r')
 
         if delta_action:
             # replace action as relative to previous frame

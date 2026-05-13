@@ -1,0 +1,67 @@
+# Task config for UMI dataset, Latent Diffusion Policy (LDP) training
+# 场景：UMI 单臂，腕部相机 + 两个触觉传感器，使用触觉 embedding 作为观测
+# 对应原始 real_peel_image_gelsight_emb_ldp_24fps.yaml 结构
+
+name: umi_rdp_image_tactile_emb_ldp_24fps
+
+image_shape: [3, 240, 320]
+dataset_path: data/hf_dataset/dataset_mini/umi_rdp_zarr
+
+shape_meta: &shape_meta
+  # acceptable types: rgb, low_dim
+  obs:
+    left_wrist_img:
+      shape: ${task.image_shape}
+      type: rgb
+    left_robot_tcp_pose:
+      shape: [3]        # 仅使用 xyz 位置
+      type: low_dim
+    left_robot_gripper_width:
+      shape: [1]
+      type: low_dim
+    left_gripper1_marker_offset_emb:
+      shape: [15]       # PCA 降维后的触觉 embedding（左触觉传感器）
+      type: low_dim
+  extended_obs:         # 用于 AT RNN decoder（LDP 阶段使用）
+    left_gripper1_marker_offset_emb:
+      shape: [15]
+      type: low_dim
+  action:
+    shape: [4]          # (x, y, z, gripper_width)
+
+dataset:
+  _target_: reactive_diffusion_policy.dataset.real_image_tactile_latent_diffusion_dataset.RealImageTactileLatentDiffusionDataset
+  shape_meta: *shape_meta
+  dataset_path: ${task.dataset_path}
+  horizon: ${horizon}
+  pad_before: ${eval:'${dataset_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  obs_temporal_downsample_ratio: ${dataset_obs_temporal_downsample_ratio}
+  n_latency_steps: ${n_latency_steps}
+  seed: 42
+  val_ratio: 0.00
+  max_train_episodes: null
+  delta_action: False
+  relative_action: True
+
+  # for calculating the normalizer parameters for the latent action
+  use_latent_action_before_vq: False
+  at:
+    _target_: reactive_diffusion_policy.model.vae.model.VAE
+    shape_meta: ${shape_meta}
+    horizon: ${at.policy.horizon}
+    n_latent_dims: ${at.policy.n_latent_dims}
+    mlp_layer_num: ${at.policy.mlp_layer_num}
+    use_conv_encoder: ${at.policy.use_conv_encoder}
+    conv_latent_dims: ${at.policy.conv_latent_dims}
+    conv_layer_num: ${at.policy.conv_layer_num}
+    use_rnn_decoder: ${at.policy.use_rnn_decoder}
+    rnn_latent_dims: ${at.policy.rnn_latent_dims}
+    rnn_layer_num: ${at.policy.rnn_layer_num}
+    use_vq: ${at.policy.use_vq}
+    n_embed: ${at.policy.n_embed}
+    vqvae_groups: ${at.policy.vqvae_groups}
+    eval: true
+    load_dir: ${at_load_dir}
+    act_scale: ${at.policy.act_scale}

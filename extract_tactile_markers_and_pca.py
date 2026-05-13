@@ -72,7 +72,7 @@ CONFIG = {
     "n_pca_components": 15,
 
     # PCA 矩阵保存目录（相对于 reactive_diffusion_policy 项目根）
-    "pca_save_dir": "data/test_vitai",
+    "pca_save_dir": "data/PCA_vitai_gf225",
 
     # 每处理多少帧打印一次进度
     "log_interval": 100,
