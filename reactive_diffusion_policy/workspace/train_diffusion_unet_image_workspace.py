@@ -30,6 +30,8 @@ from reactive_diffusion_policy.model.diffusion.ema_model import EMAModel
 from reactive_diffusion_policy.model.common.lr_scheduler import get_scheduler
 from reactive_diffusion_policy.model.common.lr_decay import param_groups_lrd
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
+from datetime import timedelta
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
@@ -104,7 +106,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             optimizer_cfg = OmegaConf.to_container(cfg.optimizer, resolve=True)
             optimizer_cfg.pop('encoder_weight_decay')
             # hack: use larger learning rate for multiple gpus
-            accelerator = Accelerator()
+            _init_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=3))
+            accelerator = Accelerator(kwargs_handlers=[_init_kwargs])
             cuda_count = accelerator.num_processes
             print("###########################################")
             print(f"Number of available CUDA devices: {cuda_count}.")
@@ -122,7 +125,9 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
     def run(self):
         cfg = copy.deepcopy(self.cfg)
         # 初始化 Accelerator（管理多卡/wandb日志）
-        accelerator = Accelerator(log_with='wandb')
+        # 设置较长的分布式超时时间，避免normalizer计算耗时过长导致barrier超时
+        init_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=3))
+        accelerator = Accelerator(log_with='wandb', kwargs_handlers=[init_kwargs])
         wandb_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
         wandb_cfg.pop('project')
         accelerator.init_trackers(
@@ -159,7 +164,12 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 pickle.dump(normalizer, f)
 
         # load normalizer on all processes
-        accelerator.wait_for_everyone()
+        # 使用文件轮询而非 NCCL barrier，避免 normalizer 计算时间过长导致 NCCL 握手超时
+        if not accelerator.is_main_process:
+            import time
+            while not os.path.exists(normalizer_path):
+                time.sleep(10)
+            time.sleep(2)  # 等待文件写入完成
         normalizer = pickle.load(open(normalizer_path, 'rb'))
 
         # configure validation dataset

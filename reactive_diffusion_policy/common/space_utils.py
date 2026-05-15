@@ -1,10 +1,10 @@
 import numpy as np
 from typing import Tuple, Union
 import transforms3d as t3d
-from geometry_msgs.msg import Pose
 import scipy.spatial.transform as st
 
-def ros_pose_to_4x4matrix(pose: Pose) -> np.ndarray:
+def ros_pose_to_4x4matrix(pose) -> np.ndarray:
+    from geometry_msgs.msg import Pose
     # Convert ROS Pose message to 4x4 transformation matrix
     mat = np.eye(4)
     quat = [pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z]
@@ -13,7 +13,8 @@ def ros_pose_to_4x4matrix(pose: Pose) -> np.ndarray:
     mat[:3, 3] = np.array([pose.position.x, pose.position.y, pose.position.z])
     return mat
 
-def ros_pose_to_6d_pose(pose: Pose) -> np.ndarray:
+def ros_pose_to_6d_pose(pose) -> np.ndarray:
+    from geometry_msgs.msg import Pose
     # convert ROS Pose message to 6D pose (x, y, z, r, p, y)
     quat = np.array([pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z])
     euler = t3d.euler.quat2euler(quat)
