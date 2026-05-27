@@ -10,9 +10,9 @@
 AT_GPU_ID=0
 
 # Stage 2（LDP）使用多卡训练，逗号分隔，例如 "0,1" 使用 GPU 0 和 GPU 1
-LDP_GPUS="0,1"
+LDP_GPUS="0"
 # 多卡数量（与 LDP_GPUS 中的卡数保持一致）
-LDP_NUM_GPUS=2
+LDP_NUM_GPUS=1
 
 DATASET_PATH="data/hf_dataset/dataset_mini/dobot_peg_in_hole_zarr"
 LOGGING_MODE="disabled"   # "online" (wandb) 或 "disabled"
@@ -28,7 +28,11 @@ CUDA_VISIBLE_DEVICES=${AT_GPU_ID} python train.py \
     task.dataset_path=${DATASET_PATH} \
     task.name=dobot_rdp_image_tactile_emb_at_24fps_${TIMESTAMP} \
     at=at_dobot_rdp \
-    logging.mode=${LOGGING_MODE}
+    logging.mode=${LOGGING_MODE} \
+    dataloader.batch_size=1024 \
+    dataloader.num_workers=8 \
+    val_dataloader.batch_size=1024 \
+    val_dataloader.num_workers=8
 
 # ── 查找 loss 最小的 AT checkpoint（topk ckpt，非 latest.ckpt）────
 echo ""
