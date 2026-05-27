@@ -399,6 +399,7 @@ class RealRunner:
                 logger.error(f"Failed to stop recording video")
 
     def run(self, policy: Union[DiffusionUnetImagePolicy]):
+        # LDP模式必须使用RNN decoder
         if self.use_latent_action_with_rnn_decoder:
             assert policy.at.use_rnn_decoder, "Policy should use rnn decoder for latent action."
         else:
@@ -410,6 +411,7 @@ class RealRunner:
         executor.add_node(self.env)
 
         try:
+            # 持续接收传感器 ROS2 消息，写入 RingBuffer
             spin_thread = threading.Thread(target=self.spin_executor, args=(executor,), daemon=True)
             spin_thread.start()
 
@@ -418,20 +420,21 @@ class RealRunner:
                                          desc=f"Eval for {self.task_name}",
                                          leave=False, mininterval=self.tqdm_interval_sec):
                 logger.info(f"Start evaluation episode {episode_idx}")
-                # ask user whether the environment resetting is done
+                # ask user whether the environment resetting is done 用户手动确认环境复位完毕（放好物体等），避免在混乱状态下开始
                 reset_flag = py_cli_interaction.parse_cli_bool('Has the environment reset finished?', default_value=True)
                 if not reset_flag:
                     logger.warning("Skip this episode.")
                     continue
 
                 logger.info("Start episode rollout.")
-                # start rollout
+                # start rollout，清空观测 RingBuffer，夹爪打开到最大宽度
                 self.env.reset()
                 # set gripper to max width
                 self.env.send_gripper_command_direct(self.env.max_gripper_width, self.env.max_gripper_width)
                 time.sleep(1)
 
                 policy.reset()
+                # 缓冲区清空
                 self.tcp_ensemble_buffer.clear()
                 self.gripper_ensemble_buffer.clear()
                 logger.debug("Reset environment and policy.")
@@ -443,22 +446,23 @@ class RealRunner:
 
                 self.stop_event.clear()
                 time.sleep(0.5)
-                # start a new thread for action command
+                # start a new thread for action command 启动快系统线程，在独立线程中以 24Hz 运行（控制线程），从 EnsembleBuffer 取动作发给机器人
                 action_thread = threading.Thread(target=self.action_command_thread, args=(policy, self.stop_event,),
                                                  daemon=True)
                 action_thread.start()
 
                 self.action_step_count = 0
                 step_count = 0
-                steps_per_inference = int(self.control_fps / self.inference_fps)
+                steps_per_inference = int(self.control_fps / self.inference_fps) # 慢系统节拍 6Hz
                 start_timestamp = time.time()
                 last_timestamp = start_timestamp
                 try:
+                    # 慢系统主循环（6Hz 推理）
                     while True:
                         # profiler = Profiler()
                         # profiler.start()
                         start_time = time.time()
-                        # get obs
+                        # 获取观测：从 RingBuffer 取最近 N 帧观测，做时间降采样（每隔1帧取一帧，24fps→12fps等效观测）
                         obs = self.env.get_obs(
                             obs_steps=self.n_obs_steps,
                             temporal_downsample_ratio=self.obs_temporal_downsample_ratio)
@@ -471,11 +475,13 @@ class RealRunner:
                             step_count += steps_per_inference
                             continue
 
+                        # 预处理观测
                         # create obs dict
                         np_obs_dict = dict(obs)
-                        # get transformed real obs dict
+                        # get transformed real obs dict 按 shape_meta 裁剪/对齐维度
                         np_obs_dict = get_real_obs_dict(
                             env_obs=np_obs_dict, shape_meta=self.shape_meta)
+                        # 相对动作转换（若启用）
                         np_obs_dict, np_absolute_obs_dict = self.pre_process_obs(np_obs_dict)
 
                         # device transfer
@@ -487,6 +493,7 @@ class RealRunner:
                         # run policy
                         with torch.no_grad():
                             if self.use_latent_action_with_rnn_decoder:
+                                # 调用策略推理-慢系统,LDP 推理耗时约 150~200ms，生成整段 latent action 序列（N步）
                                 action_dict = policy.predict_action(obs_dict,
                                                                     dataset_obs_temporal_downsample_ratio=self.dataset_obs_temporal_downsample_ratio,
                                                                     return_latent_action=True)
@@ -506,11 +513,13 @@ class RealRunner:
                                     np_absolute_obs_dict['left_robot_tcp_pose'][-1] if 'left_robot_tcp_pose' in np_absolute_obs_dict else np.array([]),
                                     np_absolute_obs_dict['right_robot_tcp_pose'][-1] if 'right_robot_tcp_pose' in np_absolute_obs_dict else np.array([])
                                 ], axis=-1)
+                                # 附加绝对坐标基准（用于后续 RNN decoder 的相对→绝对转换）
                                 action_all = np.concatenate([
                                     action_all,
                                     base_absolute_action[np.newaxis, :].repeat(action_all.shape[0], axis=0)
                                 ], axis=-1)
                             # add action step to get corresponding observation
+                            # 附加时间步索引（让 RNN decoder 知道对应哪一帧 extended_obs）
                             action_all = np.concatenate([
                                 action_all,
                                 np.arange(self.n_obs_steps * self.dataset_obs_temporal_downsample_ratio, action_all.shape[0] + self.n_obs_steps * self.dataset_obs_temporal_downsample_ratio)[:, np.newaxis]
@@ -530,6 +539,7 @@ class RealRunner:
                                 action_all = interpolate_actions_with_ratio(action_all, self.action_interpolation_ratio)
 
                         # TODO: only takes the first n_action_steps and add to the ensemble buffer
+                        # 每 tcp_action_update_interval=16 控制步（约 0.67s）更新一次
                         if step_count % self.tcp_action_update_interval == 0:
                             if self.use_latent_action_with_rnn_decoder:
                                 tcp_action = action_all[self.latency_step:, ...]
@@ -573,7 +583,9 @@ class RealRunner:
                                 self.env.get_predicted_action(gripper_action, type='full_gripper')
 
                         cur_time = time.time()
+                        # 精确睡眠，维持 6Hz
                         precise_sleep(max(0., self.inference_interval_time - (cur_time - start_time)))
+                        # 超时则退出本集
                         if cur_time - start_timestamp >= self.max_duration_time:
                             logger.info(f"Episode {episode_idx} reaches max duration time {self.max_duration_time} seconds.")
                             break
@@ -584,11 +596,11 @@ class RealRunner:
                 except KeyboardInterrupt:
                     logger.warning("KeyboardInterrupt! Terminate the episode now!")
                 finally:
-                    self.stop_event.set()
-                    action_thread.join()
+                    self.stop_event.set() # 通知快系统线程退出
+                    action_thread.join() # 等待快系统线程结束
                     if self.enable_video_recording:
-                        self.stop_record_video()
-                    self.env.save_exp(episode_idx)
+                        self.stop_record_video() # 停止录像
+                    self.env.save_exp(episode_idx) # 保存实验数据（sensor_msg 录像等）
 
             # TODO: support success count
             spin_thread.join()

@@ -67,9 +67,13 @@ def main(cfg):
     else:
         raise NotImplementedError
 
+    print("Checkpoint loaded. Starting evaluation...")
     # run eval
-    env_runner = hydra.utils.instantiate(
-        cfg.task.env_runner)
+    # Hydra 读取 yaml 配置中 task.env_runner 字段的 _target_ 属性，在运行时动态 import 并实例化对应的 Python 类
+    # 比如读取real_peel_image_wrench_ldp_24fps.yaml中env_runner的_target_字段：reactive_diffusion_policy.env_runner.real_runner.RealRunner
+    # print(f"[EnvRunner] _target_: {cfg.task.env_runner['_target_']}")
+    env_runner = hydra.utils.instantiate(cfg.task.env_runner)
+    # print(f"[Policy]    class: {policy.__class__.__name__}")
     env_runner.run(policy)
 
 

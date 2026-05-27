@@ -91,16 +91,34 @@ class DataPostProcessingManager:
             obs_dict['left_gripper2_marker_offset'] = sensor_msg.leftGripperCameraMarkerOffset2
             # TODO: more flexible way to choose which tactile sensor to use
             if self.pca_embedding_dict is not None:
+                raw1 = sensor_msg.leftGripperCameraMarkerOffset1.reshape(-1)
                 try:
                     obs_dict['left_gripper1_marker_offset_emb'] = self.pca_embedding_dict['GelSight'].pca_reduction(
-                        sensor_msg.leftGripperCameraMarkerOffset1.reshape(-1)[np.newaxis, :])[0]
+                        raw1[np.newaxis, :])[0]
                 except ValueError as e:
-                    obs_dict['left_gripper1_marker_offset_emb'] = sensor_msg.leftGripperCameraMarkerOffset1.reshape(-1)
+                    # PCA 矩阵维度与传感器 marker 数不匹配！
+                    # 例如：传感器有 81 markers（162 维），但 PCA 矩阵为 126 维（63 markers GelSight）。
+                    # 应在 pca_param_dict 中配置正确的 PCA 矩阵（data/PCA_vitai_gf225/...）。
+                    # 此处 fallback 返回原始数据会导致模型接收语义错误的触觉输入！
+                    logger.error(
+                        f"[TACTILE PCA ERROR] left_gripper1: PCA 维度不匹配！"
+                        f"输入 {raw1.shape[0]} 维，但 PCA mean 为 {self.pca_embedding_dict['GelSight'].mean.shape[0]} 维。"
+                        f"请检查 pca_param_dict 中的 transformation_matrix_path 是否与传感器 marker 数一致。"
+                        f"原始错误: {e}"
+                    )
+                    obs_dict['left_gripper1_marker_offset_emb'] = raw1
+                raw2 = sensor_msg.leftGripperCameraMarkerOffset2.reshape(-1)
                 try:
                     obs_dict['left_gripper2_marker_offset_emb'] = self.pca_embedding_dict['McTac'].pca_reduction(
-                        sensor_msg.leftGripperCameraMarkerOffset2.reshape(-1)[np.newaxis, :])[0]
+                        raw2[np.newaxis, :])[0]
                 except ValueError as e:
-                    obs_dict['left_gripper2_marker_offset_emb'] = sensor_msg.leftGripperCameraMarkerOffset2.reshape(-1)
+                    logger.error(
+                        f"[TACTILE PCA ERROR] left_gripper2: PCA 维度不匹配！"
+                        f"输入 {raw2.shape[0]} 维，但 PCA mean 为 {self.pca_embedding_dict['McTac'].mean.shape[0]} 维。"
+                        f"请检查 pca_param_dict 中的 transformation_matrix_path 是否与传感器 marker 数一致。"
+                        f"原始错误: {e}"
+                    )
+                    obs_dict['left_gripper2_marker_offset_emb'] = raw2
             if self.mode == SensorMode.single_arm_two_realsense_two_tactile:
                 return obs_dict
 
@@ -118,16 +136,30 @@ class DataPostProcessingManager:
             obs_dict['right_gripper2_marker_offset'] = sensor_msg.rightGripperCameraMarkerOffset2
             # TODO: more flexible way to choose which tactile sensor to use
             if self.pca_embedding_dict is not None:
+                raw_r1 = sensor_msg.rightGripperCameraMarkerOffset1.reshape(-1)
                 try:
                     obs_dict['right_gripper1_marker_offset_emb'] = self.pca_embedding_dict['GelSight'].pca_reduction(
-                        sensor_msg.rightGripperCameraMarkerOffset1.reshape(-1)[np.newaxis, :])[0]
+                        raw_r1[np.newaxis, :])[0]
                 except ValueError as e:
-                    obs_dict['right_gripper1_marker_offset_emb'] = sensor_msg.rightGripperCameraMarkerOffset1.reshape(-1)
+                    logger.error(
+                        f"[TACTILE PCA ERROR] right_gripper1: PCA 维度不匹配！"
+                        f"输入 {raw_r1.shape[0]} 维，但 PCA mean 为 {self.pca_embedding_dict['GelSight'].mean.shape[0]} 维。"
+                        f"请检查 pca_param_dict 中的 transformation_matrix_path 是否与传感器 marker 数一致。"
+                        f"原始错误: {e}"
+                    )
+                    obs_dict['right_gripper1_marker_offset_emb'] = raw_r1
+                raw_r2 = sensor_msg.rightGripperCameraMarkerOffset2.reshape(-1)
                 try:
                     obs_dict['right_gripper2_marker_offset_emb'] = self.pca_embedding_dict['McTac'].pca_reduction(
-                        sensor_msg.rightGripperCameraMarkerOffset2.reshape(-1)[np.newaxis, :])[0]
+                        raw_r2[np.newaxis, :])[0]
                 except ValueError as e:
-                    obs_dict['right_gripper2_marker_offset_emb'] = sensor_msg.rightGripperCameraMarkerOffset2.reshape(-1)
+                    logger.error(
+                        f"[TACTILE PCA ERROR] right_gripper2: PCA 维度不匹配！"
+                        f"输入 {raw_r2.shape[0]} 维，但 PCA mean 为 {self.pca_embedding_dict['McTac'].mean.shape[0]} 维。"
+                        f"请检查 pca_param_dict 中的 transformation_matrix_path 是否与传感器 marker 数一致。"
+                        f"原始错误: {e}"
+                    )
+                    obs_dict['right_gripper2_marker_offset_emb'] = raw_r2
 
             return obs_dict
         else:

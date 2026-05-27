@@ -46,6 +46,11 @@ class EnsembleBuffer:
         Parameters:
         - action: horizon x action_dim (...);
         - timestep: action[0]'s timestep.
+
+        缓存动作
+        模型每预测一帧 horizon × action_dim 动作序列
+        全部存到缓冲区 deque
+        按时间戳对齐，自动排列
         """
         action = np.array(action)
         if self.action_shape == None:
@@ -65,6 +70,9 @@ class EnsembleBuffer:
     def get_action(self):
         """
         Get ensembled action from buffer.
+
+        合并动作
+        从缓存里取出当前时刻所有重叠的动作预测，用你指定的策略合并成唯一稳定动作。
         """
         if self.timestep - self.actions_start_timestep >= len(self.actions):
             return None      # no data
@@ -103,6 +111,10 @@ class EnsembleBuffer:
     def _weighted_average_action(self, actions, weights):
         """
         Weighted average action.
+
+        特殊加权平均（_weighted_average_action）
+        位置（x,y,z）：直接加权平均
+        旋转（6D 姿态）：不能直接平均！用 Slerp 球面线性插值 合并四元数，保证旋转平滑连续
         """
         D = actions.shape[-1]
 

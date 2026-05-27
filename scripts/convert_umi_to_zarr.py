@@ -2,7 +2,7 @@
 将 pick_up_and_place_blocks_sync_0416 格式的 UMI 数据集
 
 使用前请先运行数据转换脚本,将触觉的tactile_left.mp4 / tactile_right.mp4 中提取 2D 标记点坐标，并对位移场做 PCA 降维，生成 RDP 训练所需的三个数组
-    python extract_tactile_data.py 
+    python extract_umi_tactile_markers_and_pca.py 
 
 转换为 RDP (Reactive Diffusion Policy) 所需的 zarr 格式。
 

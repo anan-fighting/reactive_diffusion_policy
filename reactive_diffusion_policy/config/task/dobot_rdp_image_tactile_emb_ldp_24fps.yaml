@@ -1,15 +1,15 @@
-# Task config for UMI dataset, Latent Diffusion Policy (LDP) training
-# 场景：UMI 单臂，腕部相机 + 两个触觉传感器，使用触觉 embedding 作为观测
-# 对应原始 real_peel_image_gelsight_emb_ldp_24fps.yaml 结构
+# Task config for Dobot dataset, Latent Diffusion Policy (LDP) training
+# 场景：Dobot 单臂，腕部相机 + 俯视相机 + 两个触觉传感器（ViTai GF225），使用触觉 embedding 作为观测
+# 参考：umi_rdp_image_tactile_emb_ldp_24fps.yaml
 
 defaults:
   - real_peel_two_realsense_one_gelsight_one_mctac_24fps@_here_
   - _self_
 
-name: umi_rdp_image_tactile_emb_ldp_24fps
+name: dobot_rdp_image_tactile_emb_ldp_24fps
 
 image_shape: [3, 240, 320]
-dataset_path: data/hf_dataset/dataset_mini/umi_rdp_zarr
+dataset_path: data/hf_dataset/dataset_mini/dobot_peg_in_hole_zarr
 
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
@@ -115,22 +115,22 @@ env_runner:
     data_processing_params:
       mode: 'single_arm_two_realsense_two_tactile'
       pca_param_dict:
-        # 训练数据的触觉传感器为 ViTai GF225（81 markers × 2 = 162 维），
-        # 必须使用匹配的 PCA 矩阵（162→15），而非 GelSight（63 markers × 2 = 126 维）的矩阵。
+        # 使用 Dobot 数据集训练的 PCA 矩阵（data/PCA_Dobot/），
+        # 传感器为 ViTai GF225（81 markers × 2 = 162 维，降至 15 维）
         GelSight:
           n_components: 15
           normalize: False
           mode: 'Eval'
           store: False
-          transformation_matrix_path: 'data/PCA_vitai_gf225/pca_transform_matrix_left.npy'
-          mean_matrix_path: 'data/PCA_vitai_gf225/pca_mean_matrix_left.npy'
+          transformation_matrix_path: 'data/PCA_Dobot/pca_transform_matrix_left.npy'
+          mean_matrix_path: 'data/PCA_Dobot/pca_mean_matrix_left.npy'
         McTac:
           n_components: 15
           normalize: False
           mode: 'Eval'
           store: False
-          transformation_matrix_path: 'data/PCA_vitai_gf225/pca_transform_matrix_left.npy'
-          mean_matrix_path: 'data/PCA_vitai_gf225/pca_mean_matrix_left.npy'
+          transformation_matrix_path: 'data/PCA_Dobot/pca_transform_matrix_right.npy'
+          mean_matrix_path: 'data/PCA_Dobot/pca_mean_matrix_right.npy'
       use_6d_rotation: True
       marker_dimension: 2
       debug: False

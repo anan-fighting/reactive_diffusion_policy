@@ -1,0 +1,43 @@
+# Task config for Dobot dataset, Asymmetric Tokenizer (AT) training
+# 场景：Dobot 单臂，腕部相机 + 俯视相机 + 两个触觉传感器（ViTai GF225），使用触觉 embedding 作为观测
+# 参考：umi_rdp_image_tactile_emb_at_24fps.yaml
+
+name: dobot_rdp_image_tactile_emb_at_24fps
+
+image_shape: [3, 240, 320]
+dataset_path: data/hf_dataset/dataset_mini/dobot_peg_in_hole_zarr
+
+shape_meta: &shape_meta
+  # acceptable types: rgb, low_dim
+  obs:
+    left_robot_tcp_pose:
+      shape: [3]        # 仅使用 xyz 位置
+      type: low_dim
+    left_robot_gripper_width:
+      shape: [1]
+      type: low_dim
+    left_gripper1_marker_offset_emb:
+      shape: [15]       # PCA 降维后的触觉 embedding（左触觉传感器）
+      type: low_dim
+  extended_obs:         # 用于 AT RNN decoder
+    left_gripper1_marker_offset_emb:
+      shape: [15]
+      type: low_dim
+  action:
+    shape: [4]          # (x, y, z, gripper_width)
+
+dataset:
+  _target_: reactive_diffusion_policy.dataset.real_image_tactile_dataset.RealImageTactileDataset
+  shape_meta: *shape_meta
+  dataset_path: ${task.dataset_path}
+  horizon: ${horizon}
+  pad_before: ${eval:'${dataset_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  obs_temporal_downsample_ratio: ${dataset_obs_temporal_downsample_ratio}
+  n_latency_steps: ${n_latency_steps}
+  seed: 42
+  val_ratio: 0.00
+  max_train_episodes: null
+  delta_action: False
+  relative_action: True

@@ -1,0 +1,230 @@
+# Task config for DOBOT Nova 5 single-arm deployment with LDP (Latent Diffusion Policy)
+# 场景：越疆 DOBOT Nova 5 单臂，腕部 Realsense 相机 + 两个触觉传感器
+# 使用触觉 embedding 作为观测，24fps 控制频率
+#
+# 对应训练好的 checkpoint:
+#   AT:  data/outputs/2026.05.12/18.08.58_train_vae_umi_rdp_image_tactile_emb_at_24fps_...
+#   LDP: data/outputs/2026.05.14/15.09.20_train_latent_diffusion_unet_image_umi_rdp_image_tactile_emb_ldp_24fps_...
+#
+# 启动步骤：
+#   1. python -m reactive_diffusion_policy.real_world.robot.nova5_server --robot_ip 192.168.5.1 --port 8092
+#   2. 启动 Device Mapping Server
+#   3. 启动 ROS2 传感器节点（Realsense + 触觉相机）
+#   4. python eval_real_robot_nova5.py task=nova5_rdp_image_tactile_emb_ldp_24fps ...
+
+defaults:
+  - real_peel_two_realsense_one_gelsight_one_mctac_24fps@_here_  # 继承传感器/env/teleop基础配置
+  - _self_
+
+name: nova5_rdp_image_tactile_emb_ldp_24fps
+
+image_shape: [3, 240, 320]
+dataset_path: data/hf_dataset/dataset_mini/umi_rdp_zarr
+
+# ============================================================
+# DOBOT Nova 5 机器人服务器配置（覆盖继承的 real_robot_env.yaml）
+# ============================================================
+robot_server:
+  host_ip: "0.0.0.0"          # nova5_server.py 监听地址
+  port: 8092                   # nova5_server.py 监听端口（HTTP API）
+  robot_ip: "192.168.5.1"      # DOBOT Nova 5 机器人 IP（默认出厂 IP）
+  servo_t: 0.04167             # ServoP 控制周期 = 1/24s ≈ 0.0417s
+  servo_aheadtime: 50.0        # ServoP 前瞻时间，范围 [20, 100]
+  servo_gain: 500.0            # ServoP 位置增益，范围 [200, 1000]
+  bimanual_teleop: &bimanual_teleop False
+
+teleop_server:
+  use_force_control_for_gripper: True
+  max_gripper_width: 0.085     # 夹爪最大开口（m），按实际夹爪修改
+  min_gripper_width: 0.0
+  grasp_force: 5.0
+  gripper_control_time_interval: 20
+  gripper_control_width_precision: 0.01
+  bimanual_teleop: *bimanual_teleop
+
+# ============================================================
+# 传感器 Publisher 配置（根据实际设备调整）
+# ============================================================
+publisher:
+  vr_server_ip: &vr_server_ip '192.168.5.100'  # 可视化/遥操作服务器 IP
+  vr_server_port: 10002
+  robot_publisher:
+    robot_server_ip: ${task.robot_server.host_ip}
+    robot_server_port: ${task.robot_server.port}
+    fps: 120
+    bimanual_teleop: *bimanual_teleop
+
+  # 腕部 Realsense 相机（仅保留 left_wrist_camera）
+  realsense_camera_publisher:
+    - camera_serial_number: '427622270458'  # ← 替换为实际序列号
+      camera_type: 'D405'
+      camera_name: 'left_wrist_camera'
+      rgb_resolution: [640, 480]
+      depth_resolution: [640, 480]
+      random_sample_point_num: 3000
+      fps: 24
+      decimate: 2
+      cpu_core_id:
+        - 10
+
+  # 触觉传感器（按实际类型修改 camera_type：gelsight 或 MCTac）
+  usb_camera_publisher:
+    - camera_name: 'left_gripper_camera_1'
+      camera_type: 'gelsight'   # ← 按实际修改（gelsight 或 MCTac）
+      fps: 24
+      vr_server_ip: *vr_server_ip
+      vr_server_port: ${task.publisher.vr_server_port}
+      dimension: 2
+      marker_vis_rotation_angle: 90
+      cpu_core_id:
+        - 11
+        - 12
+        - 13
+    - camera_name: 'left_gripper_camera_2'
+      camera_type: 'MCTac'      # ← 按实际修改
+      fps: 24
+      vr_server_ip: *vr_server_ip
+      vr_server_port: ${task.publisher.vr_server_port}
+      dimension: 2
+      image_rotation: 0
+      marker_vis_rotation_angle: 0
+      cpu_core_id:
+        - 14
+
+# ============================================================
+# 观测空间定义（与训练配置 umi_rdp_image_tactile_emb_ldp_24fps 对齐）
+# ============================================================
+shape_meta: &shape_meta
+  obs:
+    left_wrist_img:
+      shape: ${task.image_shape}
+      type: rgb
+    left_robot_tcp_pose:
+      shape: [3]        # xyz 位置
+      type: low_dim
+    left_robot_gripper_width:
+      shape: [1]
+      type: low_dim
+    left_gripper1_marker_offset_emb:
+      shape: [15]       # PCA 降维后的触觉 embedding
+      type: low_dim
+  extended_obs:         # 用于 AT RNN decoder（LDP 快系统实时解码）
+    left_gripper1_marker_offset_emb:
+      shape: [15]
+      type: low_dim
+  action:
+    shape: [4]          # (x, y, z, gripper_width)
+
+dataset:
+  _target_: reactive_diffusion_policy.dataset.real_image_tactile_latent_diffusion_dataset.RealImageTactileLatentDiffusionDataset
+  shape_meta: *shape_meta
+  dataset_path: ${task.dataset_path}
+  horizon: ${horizon}
+  pad_before: ${eval:'${dataset_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  obs_temporal_downsample_ratio: ${dataset_obs_temporal_downsample_ratio}
+  n_latency_steps: ${n_latency_steps}
+  seed: 42
+  val_ratio: 0.00
+  max_train_episodes: null
+  delta_action: False
+  relative_action: True
+  use_latent_action_before_vq: False
+  at:
+    _target_: reactive_diffusion_policy.model.vae.model.VAE
+    shape_meta: ${shape_meta}
+    horizon: ${at.policy.horizon}
+    n_latent_dims: ${at.policy.n_latent_dims}
+    mlp_layer_num: ${at.policy.mlp_layer_num}
+    use_conv_encoder: ${at.policy.use_conv_encoder}
+    conv_latent_dims: ${at.policy.conv_latent_dims}
+    conv_layer_num: ${at.policy.conv_layer_num}
+    use_rnn_decoder: ${at.policy.use_rnn_decoder}
+    rnn_latent_dims: ${at.policy.rnn_latent_dims}
+    rnn_layer_num: ${at.policy.rnn_layer_num}
+    use_vq: ${at.policy.use_vq}
+    n_embed: ${at.policy.n_embed}
+    vqvae_groups: ${at.policy.vqvae_groups}
+    eval: true
+    load_dir: ${at_load_dir}
+    act_scale: ${at.policy.act_scale}
+
+# ============================================================
+# Env Runner 配置（快慢系统参数）
+# ============================================================
+env_runner:
+  _target_: reactive_diffusion_policy.env_runner.real_runner.RealRunner
+  eval_episodes: 10
+  max_duration_time: 30
+  tcp_action_update_interval: 16
+  gripper_action_update_interval: 16
+  tcp_pos_clip_range:              # TCP 位置安全限制（根据实际工作空间修改！）
+    - [-100, -100, 0.05]           # [x_min, y_min, z_min]（m，z 限制不低于桌面）
+    - [100, 100, 1.0]              # [x_max, y_max, z_max]
+  tcp_rot_clip_range:
+    - [-3.14159, -3.14159, -3.14159]
+    - [3.14159, 3.14159, 3.14159]
+  latency_step: 4                  # 推理延迟补偿步数
+  gripper_latency_step: 4
+  control_fps: 24                  # 快系统控制频率
+  inference_fps: 6                 # 慢系统推理频率
+  n_obs_steps: ${n_obs_steps}
+  obs_temporal_downsample_ratio: ${obs_temporal_downsample_ratio}
+  dataset_obs_temporal_downsample_ratio: ${dataset_obs_temporal_downsample_ratio}
+  downsample_extended_obs: ${eval:'${obs_temporal_downsample_ratio}!=${dataset_obs_temporal_downsample_ratio}'}
+  task_name: ${task_name}
+  transform_params: ${task.transforms}
+  shape_meta: *shape_meta
+  use_latent_action_with_rnn_decoder: True
+  tcp_ensemble_buffer_params:
+    ensemble_mode: 'new'
+  gripper_ensemble_buffer_params:
+    ensemble_mode: 'new'
+  latent_tcp_ensemble_buffer_params:
+    ensemble_mode: 'new'
+  latent_gripper_ensemble_buffer_params:
+    ensemble_mode: 'new'
+  use_relative_action: ${task.dataset.relative_action}
+  action_interpolation_ratio: 1
+  enable_video_recording: False
+  env_params:
+    robot_server_ip: ${task.robot_server.host_ip}
+    robot_server_port: ${task.robot_server.port}
+    device_mapping_server_ip: ${task.device_mapping_server.host_ip}
+    device_mapping_server_port: ${task.device_mapping_server.port}
+    data_processing_params:
+      mode: 'single_arm_two_realsense_two_tactile'  # 单臂+腕部相机+两个触觉
+      pca_param_dict:
+        # 训练数据的触觉传感器为 ViTai GF225（81 markers × 2 = 162 维），
+        # 必须使用匹配的 PCA 矩阵（162→15），而非 GelSight（63 markers × 2 = 126 维）的矩阵。
+        # 使用错误矩阵会导致 pca_reduction() 抛出 ValueError，
+        # 进而 fallback 返回原始 162 维数据，被 pre_process_obs 截断为前 15 个原始坐标值，
+        # 而非真正的 PCA embedding，导致模型接收到语义完全错误的触觉输入。
+        GelSight:
+          n_components: 15
+          normalize: False
+          mode: 'Eval'
+          store: False
+          transformation_matrix_path: 'data/PCA_vitai_gf225/pca_transform_matrix_left.npy'
+          mean_matrix_path: 'data/PCA_vitai_gf225/pca_mean_matrix_left.npy'
+        McTac:
+          n_components: 15
+          normalize: False
+          mode: 'Eval'
+          store: False
+          transformation_matrix_path: 'data/PCA_vitai_gf225/pca_transform_matrix_left.npy'
+          mean_matrix_path: 'data/PCA_vitai_gf225/pca_mean_matrix_left.npy'
+      use_6d_rotation: True
+      marker_dimension: 2
+      debug: False
+    max_fps: 10
+    debug: False
+    use_force_control_for_gripper: ${task.teleop_server.use_force_control_for_gripper}
+    max_gripper_width: ${task.teleop_server.max_gripper_width}
+    min_gripper_width: ${task.teleop_server.min_gripper_width}
+    grasp_force: ${task.teleop_server.grasp_force}
+    gripper_control_time_interval: ${task.teleop_server.gripper_control_time_interval}
+    gripper_control_width_precision: ${task.teleop_server.gripper_control_width_precision}
+    gripper_width_threshold: 0.04
+    enable_gripper_width_clipping: True

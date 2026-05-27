@@ -42,7 +42,11 @@ param.sched_priority = 99  # highest priority
 
 pid = os.getpid()
 if libc.sched_setscheduler(pid, SCHED_RR, ctypes.byref(param)) != 0:
-    raise OSError("Failed to set scheduler")
+    logger.warning(
+        "Failed to set real-time scheduler (SCHED_RR, priority=99). "
+        "Continuing without real-time scheduling. "
+        "To enable, run with sudo, or: sudo setcap cap_sys_nice+eip $(which python)"
+    )
 
 class CameraWorker:
     def __init__(self, camera_config):
