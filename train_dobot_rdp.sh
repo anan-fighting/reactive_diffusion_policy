@@ -6,7 +6,13 @@
 #   python scripts/convert_dobot_to_zarr.py           # 将原始数据转换为 zarr 格式
 # ================================================================
 
-GPU_ID=0
+# Stage 1（AT）使用单卡训练，指定哪张卡
+AT_GPU_ID=0
+
+# Stage 2（LDP）使用多卡训练，逗号分隔，例如 "0,1" 使用 GPU 0 和 GPU 1
+LDP_GPUS="0,1"
+# 多卡数量（与 LDP_GPUS 中的卡数保持一致）
+LDP_NUM_GPUS=2
 
 DATASET_PATH="data/hf_dataset/dataset_mini/dobot_peg_in_hole_zarr"
 LOGGING_MODE="disabled"   # "online" (wandb) 或 "disabled"
@@ -14,9 +20,9 @@ LOGGING_MODE="disabled"   # "online" (wandb) 或 "disabled"
 TIMESTAMP=$(date +%m%d%H%M%S)
 SEARCH_PATH="./data/outputs"
 
-# ── Stage 1: 训练 Asymmetric Tokenizer ──────────────────────────
-echo "Stage 1: Training Asymmetric Tokenizer (AT)..."
-CUDA_VISIBLE_DEVICES=${GPU_ID} python train.py \
+# ── Stage 1: 训练 Asymmetric Tokenizer（单卡）──────────────────
+echo "Stage 1: Training Asymmetric Tokenizer (AT) on GPU ${AT_GPU_ID}..."
+CUDA_VISIBLE_DEVICES=${AT_GPU_ID} python train.py \
     --config-name=train_at_workspace \
     task=dobot_rdp_image_tactile_emb_at_24fps \
     task.dataset_path=${DATASET_PATH} \
@@ -46,10 +52,10 @@ if [ ! -f "${AT_LOAD_DIR}" ]; then
 fi
 echo "Found AT checkpoint: ${AT_LOAD_DIR}"
 
-# ── Stage 2: 训练 Latent Diffusion Policy ────────────────────────
+# ── Stage 2: 训练 Latent Diffusion Policy（多卡）────────────────
 echo ""
-echo "Stage 2: Training Latent Diffusion Policy (LDP)..."
-CUDA_VISIBLE_DEVICES=${GPU_ID} accelerate launch train.py \
+echo "Stage 2: Training Latent Diffusion Policy (LDP) on GPUs ${LDP_GPUS}..."
+CUDA_VISIBLE_DEVICES=${LDP_GPUS} accelerate launch --num_processes=${LDP_NUM_GPUS} train.py \
     --config-name=train_latent_diffusion_unet_real_image_workspace \
     task=dobot_rdp_image_tactile_emb_ldp_24fps \
     task.dataset_path=${DATASET_PATH} \
