@@ -19,8 +19,14 @@ shape_meta: &shape_meta
     left_gripper1_marker_offset_emb:
       shape: [15]       # PCA 降维后的触觉 embedding（左触觉传感器）
       type: low_dim
+    left_gripper2_marker_offset_emb:
+      shape: [15]       # PCA 降维后的触觉 embedding（右触觉传感器）
+      type: low_dim
   extended_obs:         # 用于 AT RNN decoder
     left_gripper1_marker_offset_emb:
+      shape: [15]
+      type: low_dim
+    left_gripper2_marker_offset_emb:
       shape: [15]
       type: low_dim
   action:

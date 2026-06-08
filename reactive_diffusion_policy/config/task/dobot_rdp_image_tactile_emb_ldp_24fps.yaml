@@ -17,6 +17,9 @@ shape_meta: &shape_meta
     left_wrist_img:
       shape: ${task.image_shape}
       type: rgb
+    external_img:
+      shape: ${task.image_shape}
+      type: rgb
     left_robot_tcp_pose:
       shape: [3]        # 仅使用 xyz 位置
       type: low_dim
@@ -26,8 +29,14 @@ shape_meta: &shape_meta
     left_gripper1_marker_offset_emb:
       shape: [15]       # PCA 降维后的触觉 embedding（左触觉传感器）
       type: low_dim
+    left_gripper2_marker_offset_emb:
+      shape: [15]       # PCA 降维后的触觉 embedding（右触觉传感器）
+      type: low_dim
   extended_obs:         # 用于 AT RNN decoder（LDP 阶段使用）
     left_gripper1_marker_offset_emb:
+      shape: [15]
+      type: low_dim
+    left_gripper2_marker_offset_emb:
       shape: [15]
       type: low_dim
   action:
@@ -52,7 +61,7 @@ dataset:
 
   # for calculating the normalizer parameters for the latent action
   use_latent_action_before_vq: False
-  # LDP 所需图像（left_wrist_img 约 6.9GB）+ 低维数据全部载入内存，
+  # LDP 所需图像（left_wrist_img + external_img 共约 14GB）+ 低维数据全部载入内存，
   # 消除随机访问 zarr chunk 的解压开销，大幅提升 DataLoader 速度。
   # 服务器内存充足（>40GB 可用）时强烈推荐开启。
   load_into_memory: True

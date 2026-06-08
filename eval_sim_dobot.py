@@ -7,7 +7,7 @@ eval_sim_dobot.py
 与 eval_sim_umi.py 的差异：
     - 使用 task=dobot_rdp_image_tactile_emb_ldp_24fps 配置
     - Dobot zarr 数据集含有 external_img 字段（俯视相机），
-      但 shape_meta['obs'] 中未配置该字段，因此会自动跳过，不影响推理。
+      shape_meta['obs'] 中已配置该字段为 rgb 类型，会被 LDP 的 MultiImageObsEncoder 编码使用。
     - left_robot_tcp_pose 在 zarr 中为 9 维（6D 旋转），shape_meta 中配置为 3 维（仅 xyz），
       preprocess_obs_dict 会自动截取前 3 维，与训练一致。
     - at_load_dir 接受 .ckpt 文件路径（直接指向具体 checkpoint 文件）。
@@ -129,7 +129,7 @@ def preprocess_obs_dict(obs_raw: dict,
     只处理 shape_meta 中声明的字段，其余字段（如 external_img）自动忽略。
 
     注意（Dobot 特有）：
-        - external_img 存在于 zarr 中，但未在 shape_meta['obs'] 中声明，此处直接跳过。
+        - external_img（俯视相机）在 shape_meta['obs'] 中声明为 rgb 类型，会被 LDP 的 MultiImageObsEncoder 编码使用。
         - left_robot_tcp_pose 在 zarr 中为 9 维，shape_meta 配置为 3 维，
           此处截取前 3 维，与训练一致。
     """

@@ -10,11 +10,11 @@
 AT_GPU_ID=0
 
 # Stage 2（LDP）使用多卡训练，逗号分隔，例如 "0,1" 使用 GPU 0 和 GPU 1
-LDP_GPUS="0"
+LDP_GPUS="0,1,2"
 # 多卡数量（与 LDP_GPUS 中的卡数保持一致）
-LDP_NUM_GPUS=1
+LDP_NUM_GPUS=3
 
-DATASET_PATH="data/hf_dataset/dataset_mini/dobot_peg_in_hole_zarr"
+DATASET_PATH="data/hf_dataset/dataset_mini/dobot_peg_in_hole_0604_zarr"
 LOGGING_MODE="disabled"   # "online" (wandb) 或 "disabled"
 
 TIMESTAMP=$(date +%m%d%H%M%S)
@@ -65,7 +65,7 @@ CUDA_VISIBLE_DEVICES=${LDP_GPUS} accelerate launch --num_processes=${LDP_NUM_GPU
     task.dataset_path=${DATASET_PATH} \
     task.name=dobot_rdp_image_tactile_emb_ldp_24fps_${TIMESTAMP} \
     at=at_dobot_rdp \
-    "at_load_dir=${AT_LOAD_DIR}" \
+    "at_load_dir='${AT_LOAD_DIR}'" \
     logging.mode=${LOGGING_MODE}
 
 echo ""
