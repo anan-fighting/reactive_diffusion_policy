@@ -12,7 +12,7 @@ from omegaconf import DictConfig
 from copy import deepcopy
 from typing import Union, List, Dict, Optional
 from rclpy.node import Node
-from message_filters import ApproximateTimeSynchronizer, Subscriber
+from rclpy.callback_groups import ReentrantCallbackGroup
 from collections import deque
 
 from loguru import logger
@@ -27,6 +27,55 @@ from reactive_diffusion_policy.real_world.post_process_utils import DataPostProc
 from reactive_diffusion_policy.common.space_utils import (pose_6d_to_pose_7d, pose_6d_to_4x4matrix, matrix4x4_to_pose_6d)
 
 import pyinstrument
+
+
+class NativeApproxSync:
+    """
+    A drop-in replacement for message_filters.ApproximateTimeSynchronizer
+    that uses plain rclpy create_subscription to avoid Humble callback_group bugs.
+
+    Fires the registered callback whenever ALL topics have at least one message
+    AND the newest set of messages all fall within `slop` seconds of each other.
+    """
+
+    def __init__(self, node: Node, topics_and_types: list,
+                 slop: float = 0.4, callback_group=None):
+        self._slop_ns = int(slop * 1e9)
+        self._lock = threading.Lock()
+        self._latest: Dict[str, tuple] = {}   # topic -> (stamp_ns, msg)
+        self._callbacks = []
+        self._topics = [t for t, _ in topics_and_types]
+
+        for topic, msg_type in topics_and_types:
+            node.create_subscription(
+                msg_type, topic,
+                lambda msg, t=topic: self._on_msg(t, msg),
+                10,
+                callback_group=callback_group)
+
+    def registerCallback(self, cb):
+        self._callbacks.append(cb)
+
+    def _on_msg(self, topic: str, msg):
+        stamp = msg.header.stamp
+        stamp_ns = stamp.sec * 10**9 + stamp.nanosec
+
+        fire = False
+        msgs = None
+
+        with self._lock:
+            self._latest[topic] = (stamp_ns, msg)
+
+            if len(self._latest) >= len(self._topics):
+                stamps_ns = [self._latest[t][0] for t in self._topics]
+                if (max(stamps_ns) - min(stamps_ns)) <= self._slop_ns:
+                    fire = True
+                    msgs = [self._latest[t][1] for t in self._topics]
+
+        if fire and msgs is not None:
+            for cb in self._callbacks:
+                cb(*msgs)
+
 
 def stack_last_n_obs(all_obs, n_steps: int) -> Union[np.ndarray, torch.Tensor]:
     assert(len(all_obs) > 0)
@@ -184,15 +233,19 @@ class RealRobotEnvironment(Node):
                                                 tactile_camera_marker_topic_names,
                                                 debug=self.debug)
 
-        for name, msg_type in subs_name_type:
-            self.subscribers.append(Subscriber(self, msg_type, name))
-            logger.debug(f"Subscribed to topic: {name} with type: {msg_type}")
+        # Use ReentrantCallbackGroup so all subscription callbacks can run
+        # concurrently in the MultiThreadedExecutor.
+        self._cb_group = ReentrantCallbackGroup()
 
-        # ApproximateTimeSynchronizer is used to synchronize multiple topics
-        self.ts = ApproximateTimeSynchronizer(self.subscribers, queue_size=40, slop=0.4,
-                                              allow_headerless=False)
-
+        # NativeApproxSync bypasses message_filters.Subscriber entirely and
+        # uses plain create_subscription, which reliably receives messages.
+        self._topic_list = [name for name, _ in subs_name_type]
+        self.ts = NativeApproxSync(self, subs_name_type, slop=0.4,
+                                   callback_group=self._cb_group)
         self.ts.registerCallback(self.callback)
+
+        for name, msg_type in subs_name_type:
+            logger.debug(f"Subscribed to topic: {name} with type: {msg_type}")
 
         # Create a session with robot server
         self.session = requests.session()
@@ -220,15 +273,24 @@ class RealRobotEnvironment(Node):
 
     # @pyinstrument.profile()
     def callback(self, *msgs):
+        import traceback
+        # print(f"[DEBUG] callback fired with {len(msgs)} msgs", flush=True)
+        try:
+            self._callback_impl(msgs)
+        except Exception as e:
+            print(f"[ERROR] callback exception: {e}", flush=True)
+            traceback.print_exc()
+
+    def _callback_impl(self, msgs):
         topic_dict = dict()
         for i, msg in enumerate(msgs):
-            topic_name = self.subscribers[i].topic
+            topic_name = self._topic_list[i]
             topic_dict[topic_name] = msg
 
         if self.time_check:
             # check the time differences across topics and interval between time stamps
             for i, msg in enumerate(msgs):
-                topic_name = self.subscribers[i].topic
+                topic_name = self._topic_list[i]
                 self.timestamps[topic_name].append(msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
 
         if self.debug:
@@ -483,6 +545,9 @@ class RealRobotEnvironment(Node):
         left_tcp_target_7d_in_robot = pose_6d_to_pose_7d(left_tcp_target_6d_in_robot)
         right_tcp_target_7d_in_robot = pose_6d_to_pose_7d(right_tcp_target_6d_in_robot)
 
+        logger.debug(
+            f"execute_action → left_tcp_7d: {[f'{v:.4f}' for v in left_tcp_target_7d_in_robot.tolist()]}"
+        )
         self.send_command('/move_tcp/left', {'target_tcp': left_tcp_target_7d_in_robot.tolist()})
         if is_bimanual:
             self.send_command('/move_tcp/right', {'target_tcp': right_tcp_target_7d_in_robot.tolist()})

@@ -47,6 +47,13 @@ if _SDK_PATH not in sys.path:
 
 from dobot_api import DobotApiDashboard, DobotApiFeedBack  # noqa: E402
 
+# ViTai 自适应夹爪 SDK
+_GRIPPER_SDK_PATH = os.path.join(
+    os.path.dirname(__file__), 'gripper', 'adaptive_sdk')
+if _GRIPPER_SDK_PATH not in sys.path:
+    sys.path.insert(0, _GRIPPER_SDK_PATH)
+from reactive_diffusion_policy.real_world.robot.gripper.adaptive_sdk.vitai_adaptive import ViTaiAdaptive  # noqa: E402
+
 from reactive_diffusion_policy.common.data_models import (
     BimanualRobotStates,
     MoveGripperRequest,
@@ -137,12 +144,16 @@ SERVO_T = 1.0 / 24.0        # 控制周期 ~0.0417s
 SERVO_AHEADTIME = 50.0      # 前瞻时间（类 PID D项），推荐 20~100
 SERVO_GAIN = 500.0          # 位置增益（类 PID P项），推荐 200~1000
 
-# 夹爪 DO 端口索引（按实际接线修改）
-GRIPPER_DO_INDEX = 1        # DO1 控制夹爪
-GRIPPER_CLOSE_STATUS = 1    # DO=1 → 关闭（抓取）
-GRIPPER_OPEN_STATUS = 0     # DO=0 → 打开
-GRIPPER_MAX_WIDTH_M = 0.085  # 夹爪最大开口（m），用于归一化
+# ViTai 自适应夹爪参数
+# 夹爪最大行程 130mm，传动比 4.06，电机位置范围 [0, 2960*4.06=~12018]
+GRIPPER_OPEN_POS  = 0        # 电机位置：全开
+GRIPPER_CLOSE_POS = int(3000 * 4.06)  # 电机位置：全闭 ≈ 12180
+GRIPPER_MAX_WIDTH_M  = 0.130  # 夹爪最大开口（m）
 GRIPPER_WIDTH_THRESHOLD = 0.04  # 宽度低于此值视为"需要关闭"
+# 串口参数（按实际接线修改）
+GRIPPER_SERIAL_PORT = '/dev/ttyUSB0'
+GRIPPER_SLAVE_ID    = 1
+GRIPPER_BAUDRATE    = 115200
 
 
 class Nova5Controller:
@@ -207,9 +218,18 @@ class Nova5Controller:
         else:
             logger.info("DOBOT Nova 5 使能成功")
 
-        # 打开夹爪
-        self._gripper_set(GRIPPER_OPEN_STATUS)
-        time.sleep(0.5)
+        # 初始化 ViTai 自适应夹爪
+        logger.info(f"初始化 ViTai 自适应夹爪（串口 {GRIPPER_SERIAL_PORT}）…")
+        self._gripper = ViTaiAdaptive()
+        self._gripper._port = GRIPPER_SERIAL_PORT
+        self._gripper._slave_id = GRIPPER_SLAVE_ID
+        self._gripper._baudrate = GRIPPER_BAUDRATE
+        ret = self._gripper.initGripper()
+        if ret != 0:
+            logger.warning("ViTai 夹爪初始化失败，夹爪控制将不可用")
+        else:
+            logger.info("ViTai 夹爪初始化成功，打开夹爪…")
+            self._gripper.open()
 
     # ── 反馈线程 ──────────────────────────────
     def _feedback_loop(self):
@@ -280,6 +300,59 @@ class Nova5Controller:
                 pass
         return [0.0] * 6
 
+    def _get_robot_mode(self) -> int:
+        """
+        查询当前 RobotMode。
+        1=初始化, 4=禁用, 5=空闲(使能), 7=运动中, 9=报警, 11=暂停
+        返回 -1 表示查询失败。
+        """
+        try:
+            resp = self.dashboard.RobotMode()
+            nums = parse_result_id(resp)
+            return nums[1] if len(nums) > 1 else -1
+        except Exception:
+            return -1
+
+    def _ensure_enabled(self, timeout: float = 3.0) -> bool:
+        """
+        确保机器人处于使能/空闲状态（RobotMode=5）。
+        - 若处于报警(9)：ClearError + EnableRobot
+        - 若处于运动中(7/8)：等待完成
+        - 若处于暂停(10)：Continue() 恢复
+        - 若处于碰撞(11)：ClearError + EnableRobot
+        返回 True 表示成功进入 mode 5。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            mode = self._get_robot_mode()
+            if mode == 5:
+                return True
+            elif mode == 9:
+                logger.warning(f"RobotMode={mode}（报警），正在清除…")
+                self.dashboard.ClearError()
+                time.sleep(0.3)
+                self.dashboard.EnableRobot()
+                time.sleep(0.5)
+            elif mode == 10:
+                # 暂停状态，调用 Continue() 恢复
+                logger.warning(f"RobotMode={mode}（暂停），正在恢复…")
+                self.dashboard.Continue()
+                time.sleep(0.5)
+            elif mode == 11:
+                # 碰撞检测触发状态，清除报警后重新使能
+                logger.warning(f"RobotMode={mode}（碰撞），正在清除…")
+                self.dashboard.ClearError()
+                time.sleep(0.3)
+                self.dashboard.EnableRobot()
+                time.sleep(0.5)
+            elif mode in (7, 8):
+                # 运动中，等待完成
+                time.sleep(0.05)
+            else:
+                time.sleep(0.05)
+        logger.error(f"_ensure_enabled: 等待 mode=5 超时，当前 mode={self._get_robot_mode()}")
+        return False
+
     def is_fault(self) -> bool:
         """检查机器人是否处于报警/故障状态（RobotMode=9 表示报警）"""
         fb = self._get_feedback()
@@ -320,53 +393,175 @@ class Nova5Controller:
         # 四元数 → ZYX 欧拉角（度）
         rx_deg, ry_deg, rz_deg = quat_to_euler_deg(qw, qx, qy, qz)
 
+        # 若四元数接近单位四元数（模型只预测位置，旋转为全零），
+        # 则使用当前机器人的实际姿勢，避免 ServoP -7（无效姿势）
+        if abs(rx_deg) < 1e-3 and abs(ry_deg) < 1e-3 and abs(rz_deg) < 1e-3:
+            fb = self._get_feedback()
+            if fb is not None:
+                try:
+                    tv = fb['ToolVectorActual'][0]  # [x, y, z, rx, ry, rz]
+                    rx_deg, ry_deg, rz_deg = float(tv[3]), float(tv[4]), float(tv[5])
+                except Exception:
+                    pass
+
+        logger.debug(
+            f"ServoP → x={x_mm:.1f}mm y={y_mm:.1f}mm z={z_mm:.1f}mm "
+            f"rx={rx_deg:.2f}° ry={ry_deg:.2f}° rz={rz_deg:.2f}°"
+        )
+        # ServoP 连续控制时，RobotMode=5（空闲）或 7（运行中）均可正常发送
+        # 只有报警/暂停/碰撞状态（9/10/11）才需要恢复
+        mode = self._get_robot_mode()
+        logger.debug(f"ServoP 前 RobotMode={mode}")
+        if mode not in (5, 7, 8):
+            logger.warning(f"ServoP 前 RobotMode={mode}（异常），尝试恢复…")
+            self._ensure_enabled(timeout=3.0)
+
         with self._lock:
-            self.dashboard.ServoP(
+            result = self.dashboard.ServoP(
                 x_mm, y_mm, z_mm,
                 rx_deg, ry_deg, rz_deg,
                 t=self.servo_t,
                 aheadtime=self.servo_aheadtime,
                 gain=self.servo_gain,
             )
+            if result is not None and str(result).startswith("0"):
+                pass  # success
+            else:
+                logger.warning(f"ServoP 返回：{result}（mode={self._get_robot_mode()}）")
+                # 最后一次尝试：清除报警后重试
+                self.dashboard.ClearError()
+                time.sleep(0.3)
+                self.dashboard.EnableRobot()
+                time.sleep(0.5)
+                self.dashboard.ServoP(
+                    x_mm, y_mm, z_mm,
+                    rx_deg, ry_deg, rz_deg,
+                    t=self.servo_t,
+                    aheadtime=self.servo_aheadtime,
+                    gain=self.servo_gain,
+                )
 
-    # ── 夹爪控制 ─────────────────────────────
-    def _gripper_set(self, status: int):
-        """底层 DO 控制夹爪（status=1关/status=0开）"""
-        resp = self.dashboard.DO(GRIPPER_DO_INDEX, status)
-        code = parse_result_id(resp)
-        if code[0] != 0:
-            logger.warning(f"夹爪 DO 指令失败：{resp}")
-
+    # ── 夹爪控制（ViTai 自适应夹爪）────────────
     def gripper_move(self, width_m: float, velocity: float = 10.0, force_limit: float = 5.0):
         """
         控制夹爪到目标宽度（米）。
-        宽度 < GRIPPER_WIDTH_THRESHOLD → 关闭（抓取）
-        宽度 >= GRIPPER_WIDTH_THRESHOLD → 打开
+        宽度 < GRIPPER_WIDTH_THRESHOLD → 自适应闭合（adaptiveClose）
+        宽度 >= GRIPPER_WIDTH_THRESHOLD → 打开到全开位置
         """
+        # 安全截断：防止异常值导致误操作
+        width_m = float(np.clip(width_m, 0.0, GRIPPER_MAX_WIDTH_M))
+
+        if self._gripper.init_gripper != True:
+            logger.warning("夹爪未初始化，跳过 gripper_move")
+            return
+
         if width_m < GRIPPER_WIDTH_THRESHOLD:
-            self._gripper_set(GRIPPER_CLOSE_STATUS)
-            self._gripper_width_m = 0.0
-            logger.debug(f"夹爪关闭（目标宽度 {width_m:.4f}m < 阈值 {GRIPPER_WIDTH_THRESHOLD}m）")
+            logger.debug(f"夹爪自适应闭合（目标宽度 {width_m:.4f}m < 阈值 {GRIPPER_WIDTH_THRESHOLD}m）")
+            self._gripper.adaptiveClose()
         else:
-            self._gripper_set(GRIPPER_OPEN_STATUS)
-            self._gripper_width_m = GRIPPER_MAX_WIDTH_M
             logger.debug(f"夹爪打开（目标宽度 {width_m:.4f}m）")
+            self._gripper.open()
 
     def gripper_grasp(self, force_limit: float = 5.0):
-        """强制关闭夹爪（力控模式，DOBOT 使用 DO 实现）"""
-        self._gripper_set(GRIPPER_CLOSE_STATUS)
-        self._gripper_width_m = 0.0
+        """强制关闭夹爪到最大闭合位置"""
+        if self._gripper.init_gripper != True:
+            logger.warning("夹爪未初始化，跳过 gripper_grasp")
+            return
+        self._gripper.close()
 
     def gripper_stop(self):
-        """停止夹爪（保持当前状态）"""
-        pass  # DOBOT DO 控制无速度概念，无需实现
+        """停止夹爪运动"""
+        if self._gripper.init_gripper != True:
+            return
+        self._gripper.stop()
 
     def get_gripper_state(self) -> List[float]:
         """返回夹爪状态 [width_m, force_N]
-        注意：DOBOT 通过 DO 数字输出控制夹爪（无位置传感器），
-        width_m 为软件估值：关闭→0.0，打开→GRIPPER_MAX_WIDTH_M。
+        width_m 由电机位置换算：pos / GRIPPER_CLOSE_POS * GRIPPER_MAX_WIDTH_M（反向）
         """
-        return [self._gripper_width_m, 0.0]
+        if self._gripper.init_gripper != True:
+            return [GRIPPER_MAX_WIDTH_M, 0.0]
+        try:
+            pos = self._gripper.get_position()  # 0=全开, GRIPPER_CLOSE_POS=全闭
+            # 位置越大 → 开口越小
+            width_m = (1.0 - pos / GRIPPER_CLOSE_POS) * GRIPPER_MAX_WIDTH_M
+            width_m = float(max(0.0, min(GRIPPER_MAX_WIDTH_M, width_m)))
+        except Exception as e:
+            logger.warning(f"读取夹爪位置失败：{e}")
+            width_m = GRIPPER_MAX_WIDTH_M
+        return [width_m, 0.0]
+
+    def move_to_init_pose(self,
+                          init_tcp_pose: List[float] = None,
+                          speed_ratio: int = 20,
+                          wait: bool = True,
+                          wait_timeout: float = 15.0):
+        """
+        笛卡尔空间直线运动（MovL）到起始点，启动后自动调用。
+
+        init_tcp_pose: [x_m, y_m, z_m, rx_rad, ry_rad, rz_rad]
+            前三位为位置（米），后三位为 ZYX 欧拉角（弧度）。
+            默认值为 [0.5793687, -0.1360939, 0.2334053, 3.14, -0.0, -1.57]。
+        speed_ratio: MovL 速度比例 1~100，默认 20（缓慢安全）。
+        wait: 是否阻塞等待运动完成（RobotMode 回到 5）。
+        wait_timeout: 等待超时（秒）。
+        """
+        if init_tcp_pose is None:
+            init_tcp_pose = [0.5793687, -0.1360939, 0.2334053, 3.14, -0.0, -1.57]
+
+        x_m, y_m, z_m, rx_rad, ry_rad, rz_rad = init_tcp_pose
+        x_mm  = x_m  * 1000.0
+        y_mm  = y_m  * 1000.0
+        z_mm  = z_m  * 1000.0
+        rx_deg = math.degrees(rx_rad)
+        ry_deg = math.degrees(ry_rad)
+        rz_deg = math.degrees(rz_rad)
+
+        logger.info(
+            f"移动到起始点：x={x_mm:.1f}mm y={y_mm:.1f}mm z={z_mm:.1f}mm "
+            f"rx={rx_deg:.2f}° ry={ry_deg:.2f}° rz={rz_deg:.2f}° speed={speed_ratio}%"
+        )
+
+        # 确保机器人处于使能状态
+        self._ensure_enabled(timeout=5.0)
+
+        # 使用 MovJ（coordinateMode=0 笛卡尔 pose 输入，关节插值）：
+        # MovL 直线插值在规划时会生成"预处理接近点"，该点可能超出关节限位导致报警；
+        # MovJ+coordinateMode=0 同样接受笛卡尔坐标（pose），但采用关节插值到达目标，
+        # 不产生预处理点，可避免关节限位问题。
+        resp = self.dashboard.MovJ(
+            x_mm, y_mm, z_mm,
+            rx_deg, ry_deg, rz_deg,
+            0,          # coordinateMode=0：目标为笛卡尔 pose（非关节角）
+            v=speed_ratio,
+        )
+        code = parse_result_id(resp)
+        if code[0] != 0:
+            logger.warning(f"MovJ 起始点指令返回异常：{resp}")
+            return resp
+
+        if wait:
+            # 先等 0.5s 让机器人开始运动（从 mode=5 切换到 7/8）
+            time.sleep(0.5)
+            deadline = time.time() + wait_timeout
+            while time.time() < deadline:
+                mode = self._get_robot_mode()
+                if mode == 5:
+                    logger.info("已到达起始点，机器人空闲（RobotMode=5）。")
+                    break
+                elif mode == 9:
+                    logger.warning("移动到起始点过程中出现报警（mode=9），正在清除…")
+                    self.dashboard.ClearError()
+                    time.sleep(0.3)
+                    self.dashboard.EnableRobot()
+                    time.sleep(0.5)
+                    logger.warning("已清除报警，起始点运动中止，请手动确认机器人位置。")
+                    break
+                time.sleep(0.1)
+            else:
+                logger.warning(f"等待到达起始点超时（{wait_timeout}s），当前 mode={self._get_robot_mode()}")
+
+        return resp
 
     def go_home(self, home_joint_deg: List[float] = None):
         """
@@ -427,6 +622,11 @@ class Nova5Server:
 
         self.app = FastAPI()
         self._setup_routes()
+
+        # 服务器启动前，先移动到起始点
+        logger.info("正在移动到起始点，请确保周围无障碍物…")
+        self.robot.move_to_init_pose()
+        logger.info("已到达起始点，Server 就绪。")
 
     def _setup_routes(self):
 
@@ -516,6 +716,14 @@ class Nova5Server:
             """
             resp = self.robot.go_home()
             return {"message": f"Nova 5 go_home → {resp}"}
+
+        @self.app.post("/move_to_init_pose")
+        async def move_to_init_pose() -> Dict[str, str]:
+            """将机器人移动到笛卡尔空间起始点（MovL）。
+            起始点：x=579.4mm y=-136.1mm z=233.4mm rx=179.91° ry=0.0° rz=-89.95°
+            """
+            resp = self.robot.move_to_init_pose()
+            return {"message": f"Nova 5 move_to_init_pose → {resp}"}
 
     def run(self):
         logger.info(f"DOBOT Nova 5 HTTP Server 启动：http://{self.host_ip}:{self.port}")

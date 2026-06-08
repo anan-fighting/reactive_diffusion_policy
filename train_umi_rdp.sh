@@ -55,7 +55,7 @@ CUDA_VISIBLE_DEVICES=${GPU_ID} accelerate launch train.py \
     task.dataset_path=${DATASET_PATH} \
     task.name=umi_rdp_image_tactile_emb_ldp_24fps_${TIMESTAMP} \
     at=at_umi_rdp \
-    at_load_dir=${AT_LOAD_DIR} \
+    "at_load_dir=${AT_LOAD_DIR}" \
     logging.mode=${LOGGING_MODE}
 
 echo ""

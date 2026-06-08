@@ -86,6 +86,8 @@ class RealRunner:
                  vcamera_server_ip: Optional[Union[str, ListConfig]] = None,
                  vcamera_server_port: Optional[Union[int, ListConfig]] = None,
                  task_name=None,
+                 gripper_close_pos: float = 12180.0,
+                 gripper_max_width_m: float = 0.130,
                  ):
         self.task_name = task_name
         self.transforms = RealWorldTransforms(option=transform_params)
@@ -152,6 +154,10 @@ class RealRunner:
         self.use_relative_tcp_obs_for_relative_action = use_relative_tcp_obs_for_relative_action
         self.action_interpolation_ratio = action_interpolation_ratio
 
+        # 夹爪单位换算参数（训练数据为电机位置 0~12180，真机 API 期望米 0~0.130）
+        self.gripper_close_pos = gripper_close_pos
+        self.gripper_max_width_m = gripper_max_width_m
+
         self.enable_video_recording = enable_video_recording
         if enable_video_recording:
             assert isinstance(vcamera_server_ip, str) and isinstance(vcamera_server_port, int) or \
@@ -163,6 +169,9 @@ class RealRunner:
         elif isinstance(vcamera_server_ip, ListConfig):
             vcamera_server_ip_list = list(vcamera_server_ip)
             vcamera_server_port_list = list(vcamera_server_port)
+        else:
+            vcamera_server_ip_list = []
+            vcamera_server_port_list = []
         self.vcamera_server_ip_list = vcamera_server_ip_list
         self.vcamera_server_port_list = vcamera_server_port_list
         self.video_dir = osp.join(output_dir, 'videos')
@@ -370,11 +379,41 @@ class RealRunner:
                 gripper_step_action = gripper_step_action[tcp_len:]
 
             combined_action = np.concatenate([tcp_step_action, gripper_step_action], axis=-1)
+
+            # --- 夹爪单位换算：电机位置 (0~12180) → 米 (0~0.130) ---
+            # 训练数据中 gripper_width 为 ViTai 电机位置值（1724~7392），
+            # 但 nova5_server.send_gripper_command 期望以米为单位的宽度值。
+            # 换算公式与 nova5_server.get_gripper_state 一致：
+            #   width_m = (1 - pos / close_pos) * max_width_m
+            total_dim = combined_action.shape[-1]
+            if total_dim == 4:
+                gripper_indices = [3]
+            elif total_dim == 8:
+                gripper_indices = [6, 7]
+            elif total_dim == 10:
+                gripper_indices = [9]
+            elif total_dim == 20:
+                gripper_indices = [18, 19]
+            else:
+                gripper_indices = []
+            for idx in gripper_indices:
+                motor_pos = combined_action[idx]
+                width_m = (1.0 - motor_pos / self.gripper_close_pos) * self.gripper_max_width_m
+                width_m = float(np.clip(width_m, 0.0, self.gripper_max_width_m))
+                logger.debug(f"[GRIP-CONV] idx={idx} motor_pos={motor_pos:.1f} → width_m={width_m:.4f}")
+                combined_action[idx] = width_m
+
             # convert to 16-D robot action (TCP + gripper of both arms)
             # TODO: handle rotation in temporal ensemble buffer!
             step_action, is_bimanual = self.post_process_action(combined_action[np.newaxis, :])
             step_action = step_action.squeeze(0)
 
+            logger.info(
+                f"[ACT] step={self.action_step_count} "
+                f"left_xyz=[{step_action[0]:.4f},{step_action[1]:.4f},{step_action[2]:.4f}]m "
+                f"left_rpy=[{step_action[3]:.3f},{step_action[4]:.3f},{step_action[5]:.3f}]rad "
+                f"left_grip={step_action[6]:.4f}m"
+            )
             # send action to the robot
             self.env.execute_action(step_action, use_relative_action=False, is_bimanual=is_bimanual)
 
@@ -513,6 +552,28 @@ class RealRunner:
                                     np_absolute_obs_dict['left_robot_tcp_pose'][-1] if 'left_robot_tcp_pose' in np_absolute_obs_dict else np.array([]),
                                     np_absolute_obs_dict['right_robot_tcp_pose'][-1] if 'right_robot_tcp_pose' in np_absolute_obs_dict else np.array([])
                                 ], axis=-1)
+                                logger.info(
+                                    f"[SLOW] step={step_count} "
+                                    f"base_xyz=[{base_absolute_action[0]:.4f},{base_absolute_action[1]:.4f},{base_absolute_action[2]:.4f}]m "
+                                    f"latent_norm={float(np.linalg.norm(action_all)):.4f}"
+                                )
+                                # --- 诊断日志：触觉 embedding + 腕部图像统计 ---
+                                if 'left_gripper1_marker_offset_emb' in np_absolute_obs_dict:
+                                    tac_emb = np_absolute_obs_dict['left_gripper1_marker_offset_emb'][-1]  # 最新帧
+                                    logger.info(
+                                        f"[DIAG] step={step_count} "
+                                        f"tactile_emb_norm={float(np.linalg.norm(tac_emb)):.4f} "
+                                        f"tactile_emb=[{', '.join(f'{v:.4f}' for v in tac_emb[:5])}...]"
+                                    )
+                                if 'left_wrist_img' in np_obs_dict:
+                                    wrist_img = np_obs_dict['left_wrist_img'][-1]  # (C, H, W)
+                                    logger.info(
+                                        f"[DIAG] step={step_count} "
+                                        f"wrist_img_mean={float(wrist_img.mean()):.4f} "
+                                        f"wrist_img_std={float(wrist_img.std()):.4f} "
+                                        f"wrist_img_shape={wrist_img.shape}"
+                                    )
+                                # --- 诊断日志结束 ---
                                 # 附加绝对坐标基准（用于后续 RNN decoder 的相对→绝对转换）
                                 action_all = np.concatenate([
                                     action_all,
@@ -555,8 +616,15 @@ class RealRunner:
                                 else:
                                     raise NotImplementedError
                             # add to ensemble buffer
-                            logger.debug(f"Step: {step_count}, Add TCP action to ensemble buffer: {tcp_action}")
-                            self.tcp_ensemble_buffer.add_action(tcp_action, step_count)
+                            # 使用快系统的当前 timestep，确保新 action 接在旧序列之后而非覆盖
+                            add_timestep = self.tcp_ensemble_buffer.timestep
+                            logger.info(
+                                f"[BUF] step={step_count} add_tcp: "
+                                f"n_steps={tcp_action.shape[0]} "
+                                f"at_timestep={add_timestep} "
+                                f"buf_size_before={len(self.tcp_ensemble_buffer.actions)}"
+                            )
+                            self.tcp_ensemble_buffer.add_action(tcp_action, add_timestep)
 
                             if self.env.enable_exp_recording and not self.use_latent_action_with_rnn_decoder:
                                 self.env.get_predicted_action(tcp_action, type='full_tcp')
@@ -576,8 +644,9 @@ class RealRunner:
                                 else:
                                     raise NotImplementedError
                             # add to ensemble buffer
-                            logger.debug(f"Step: {step_count}, Add gripper action to ensemble buffer: {gripper_action}")
-                            self.gripper_ensemble_buffer.add_action(gripper_action, step_count)
+                            # 打印太多先注释 logger.debug(f"Step: {step_count}, Add gripper action to ensemble buffer: {gripper_action}")
+                            logger.debug(f"Step: {step_count}, Add gripper action to ensemble buffer: {gripper_action.size}")
+                            self.gripper_ensemble_buffer.add_action(gripper_action, self.gripper_ensemble_buffer.timestep)
 
                             if self.env.enable_exp_recording and not self.use_latent_action_with_rnn_decoder:
                                 self.env.get_predicted_action(gripper_action, type='full_gripper')

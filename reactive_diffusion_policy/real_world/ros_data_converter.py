@@ -98,17 +98,14 @@ class ROS2DataConverter:
                 left_tcp_wrench_array, right_tcp_wrench_array, left_gripper_state_array, right_gripper_state_array)
     
     def decode_depth_rgb_image(self, msg: Image) -> np.ndarray:
-        # Decode the image from JPEG format
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        color_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        
+        # Decode raw BGR8 image (msg.data is raw pixel bytes, not JPEG)
+        color_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
         return color_image
 
     def decode_rgb_image(self, msg: Image) -> np.ndarray:
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        color_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        # Decode raw BGR8 image then convert to RGB
+        color_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
         rgb_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
-
         return rgb_image
 
     def decode_tactile_messages(self, msg: PointCloud2):

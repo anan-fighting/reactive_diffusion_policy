@@ -15,20 +15,26 @@ python -m reactive_diffusion_policy.real_world.robot.nova5_server \
     --host_ip 0.0.0.0 \
     --port 8092
 
-## 2. 启动相机节点（Device Mapping Server 会在其中自动内嵌启动）
+## 2.启动 DOBOT Nova 5 机器人状态发布节点（在另一个终端）
+python -m reactive_diffusion_policy.real_world.publisher.bimanual_robot_publisher \
+    task=nova5_rdp_image_tactile_emb_ldp_24fps
+
+## 3. 启动相机节点（Device Mapping Server 会在其中自动内嵌启动）
 ##    Device Mapping Server 是仓库内置的轻量 HTTP 服务（默认端口 8062），
 ##    负责动态探测当前接入的 RealSense / USB 触觉相机设备，
 ##    并维护"设备 → ROS2 话题名"映射表，供 RealEnv 订阅正确的话题。
 ##    代码位于：reactive_diffusion_policy/real_world/device_mapping/device_mapping_server.py
+启动相机节点（Device Mapping Server + 2个Realsense + 2个ViTai传感器）
 python camera_node_launcher.py task=nova5_rdp_image_tactile_emb_ldp_24fps
 
-## 3. 运行本推理脚本（LDP 部署，加载 LDP checkpoint，内含 AT 子模块）
+## 4. 运行本推理脚本（LDP 部署，加载 LDP checkpoint，内含 AT 子模块）
+##    注意：使用 Dobot 数据集训练的 checkpoint，AT 配置需指定 at=at_dobot_rdp
 python eval_real_robot_nova5.py \
     --config-name train_latent_diffusion_unet_real_image_workspace \
     task=nova5_rdp_image_tactile_emb_ldp_24fps \
-    # ↑ 与 camera_node_launcher.py 使用相同的 task，确保 device_mapping_server 端口匹配
-    ckpt_path="data/outputs/2026.05.14/15.09.20_train_latent_diffusion_unet_image_umi_rdp_image_tactile_emb_ldp_24fps_0514150913/checkpoints/latest.ckpt" \
-    at_load_dir="data/outputs/2026.05.12/18.08.58_train_vae_umi_rdp_image_tactile_emb_at_24fps_0512180857/checkpoints" \
+    at=at_dobot_rdp \
+    +ckpt_path="data/outputs/2026.05.28_dobot_ldp/11.47.29_train_latent_diffusion_unet_image_dobot_rdp_image_tactile_emb_ldp_24fps_0528114721/checkpoints/epoch-0400-train_loss-0.002.ckpt" \
+    +at_load_dir="data/outputs/2026.05.27_dobot_at/18.46.26_train_vae_dobot_rdp_image_tactile_emb_at_24fps_0527184624/checkpoints/epoch-0580-train_loss-0.010161.ckpt" \
     hydra.run.dir="data/outputs/nova5_eval"
 
 参数说明：

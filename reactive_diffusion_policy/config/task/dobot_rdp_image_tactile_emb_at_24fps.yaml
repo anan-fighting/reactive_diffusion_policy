@@ -41,3 +41,6 @@ dataset:
   max_train_episodes: null
   delta_action: False
   relative_action: True
+  # AT 阶段无图像输入，所有 obs 均为低维向量（总大小 <<1GB），
+  # 直接载入内存可消除随机访问 zarr chunk 的解压开销，大幅提升 DataLoader 速度。
+  load_into_memory: True

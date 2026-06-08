@@ -4,7 +4,7 @@
 触觉标记点提取 + PCA 降维脚本（Dobot 版本）
 ==========================================
 针对 Dobot 采集的数据集（如 /home/zzw/teleop_data/Dobot_peg_in_hole），
-从 tactile_left_warped_image.mp4 / tactile_right_warped_image.mp4 中提取
+从 tactile_left.mp4 / tactile_right.mp4 中提取
 2D 标记点坐标，并对位移场做 PCA 降维，生成 RDP 训练所需的三个数组：
 
     initial_marker     [T, N*M, 2]  第 0 帧标记点坐标（归一化到 [0,1]）
@@ -13,7 +13,7 @@
 
 与 extract_umi_tactile_markers_and_pca.py 的主要差异：
     1. 数据集无 hand_subdir 子目录，触觉视频直接位于 episode_X/ 下
-    2. 视频文件名为 tactile_{side}_warped_image.mp4（而非 tactile_{side}.mp4）
+    2. 视频文件名为 tactile_{side}.mp4
     3. 位姿文件名为 robot_tcp_pose.npy（原数据集为 vio_pose.npy）
 
 工作流程：
@@ -54,13 +54,14 @@ import numpy as np
 # ─────────────────────────────── CONFIG ──────────────────────────────────────
 CONFIG = {
     # 数据集根目录（Dobot 采集）
-    "episodes_root": "/home/zzw/teleop_data/Dobot_peg_in_hole",
+    "episodes_root": "/home/zzw/teleop_data/Dobot_peg_in_hole_0604",
+    # "episodes_root": "/home/zzw/teleop_data/test",
 
     # episode 目录前缀
     "episode_prefix": "episode_",
 
     # 处理哪些 side
-    # 视频文件名规则：tactile_{side}_warped_image.mp4
+    # 视频文件名规则：tactile_{side}.mp4
     "sides": ["left", "right"],
 
     # ViTai 传感器型号
@@ -73,7 +74,8 @@ CONFIG = {
     "n_pca_components": 15,
 
     # PCA 矩阵保存目录（相对于 reactive_diffusion_policy 项目根）
-    "pca_save_dir": "data/PCA_Dobot",
+    "pca_save_dir": "data/PCA_Dobot_peg_in_hole_0604",
+    # "pca_save_dir": "data/000test",
 
     # 每处理多少帧打印一次进度
     "log_interval": 100,
@@ -94,9 +96,9 @@ def import_sdk():
 def get_video_path(episode_dir: Path, side: str) -> Path:
     """
     返回 Dobot 数据集中触觉视频的路径。
-    文件名格式：tactile_{side}_warped_image.mp4
+    文件名格式：tactile_{side}.mp4
     """
-    return episode_dir / f"tactile_{side}_warped_image.mp4"
+    return episode_dir / f"tactile_{side}.mp4"
 
 
 # ─────────────────────────── Step 1：提取标记点 ───────────────────────────────
@@ -204,7 +206,7 @@ def step1_extract_all(episodes_root: str, episodes: list, sides: list,
     遍历所有 episode，提取并保存 initial_marker_{side}.npy 和 marker_offset_{side}.npy。
 
     Dobot 数据集文件直接位于 episode_X/ 目录下，无 hand_subdir 子目录。
-    视频文件名：tactile_{side}_warped_image.mp4
+    视频文件名：tactile_{side}.mp4
     输出文件名：initial_marker_{side}.npy / marker_offset_{side}.npy
     """
     print("\n" + "="*60)
@@ -418,7 +420,7 @@ def main():
     print(f"[INFO] episodes_root : {root}")
     print(f"[INFO] 共 {len(episodes)} 个 episode，side: {cfg['sides']}")
     print(f"[INFO] 执行步骤: {args.step}")
-    print(f"[INFO] 视频文件名格式: tactile_{{side}}_warped_image.mp4")
+    print(f"[INFO] 视频文件名格式: tactile_{{side}}.mp4")
 
     pca_save_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),

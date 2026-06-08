@@ -262,24 +262,22 @@ class BimanualRobotPublisher(Node):
 
 
 def main(args=None):
+    import sys
     rclpy.init(args=args)
 
     from hydra import initialize, compose
-    import threading
+    from omegaconf import OmegaConf
+
+    # 从命令行参数中读取 task=xxx，默认使用 nova5 配置
+    task_override = "task=nova5_rdp_image_tactile_emb_ldp_24fps"
+    for arg in sys.argv[1:]:
+        if arg.startswith("task="):
+            task_override = arg
+            break
 
     with initialize(config_path='../../config', version_base="1.3"):
-        # config is relative to a module
-        cfg = compose(config_name="real_world_env", overrides=["task=wipe_vase_two_realsense_one_gelsight_24fps"])
+        cfg = compose(config_name="real_world_env", overrides=[task_override])
 
-    from reactive_diffusion_policy.real_world.robot.bimanual_flexiv_server import BimanualFlexivServer
-
-    # create robot server
-    robot_server = BimanualFlexivServer(**cfg.task.robot_server)
-    robot_server_thread = threading.Thread(target=robot_server.run, daemon=True)
-    # start the robot server
-    robot_server_thread.start()
-    # wait for the robot server to start
-    time.sleep(1)
     transforms = RealWorldTransforms(option=cfg.task.transforms)
 
     node = BimanualRobotPublisher(transforms=transforms, **cfg.task.publisher.robot_publisher)

@@ -54,40 +54,58 @@ publisher:
     fps: 120
     bimanual_teleop: *bimanual_teleop
 
-  # 腕部 Realsense 相机（仅保留 left_wrist_camera）
+  # Realsense 相机：腕部（D405）+ 第三视角俯视（D455）
   realsense_camera_publisher:
-    - camera_serial_number: '427622270458'  # ← 替换为实际序列号
-      camera_type: 'D405'
+    - camera_serial_number: '427622270458'  # Realsense D405 腕部相机
+      camera_type: 'D400'                   # D405 属于 D400 系列
       camera_name: 'left_wrist_camera'
       rgb_resolution: [640, 480]
       depth_resolution: [640, 480]
       random_sample_point_num: 3000
       fps: 24
       decimate: 2
+      exposure: 33000   # D405 固定曝光
+      gain: 16          # D405 固定增益
       cpu_core_id:
         - 10
+    - camera_serial_number: '341522300463'  # Realsense D455 第三视角 top 相机
+      camera_type: 'D400'                   # D455 属于 D400 系列
+      camera_name: 'external_camera'
+      rgb_resolution: [640, 480]
+      depth_resolution: [640, 480]
+      random_sample_point_num: 3000
+      fps: 24
+      decimate: 2
+      exposure: 166     # D455 固定曝光
+      gain: 64          # D455 固定增益
+      cpu_core_id:
+        - 15
 
-  # 触觉传感器（按实际类型修改 camera_type：gelsight 或 MCTac）
+  # 触觉传感器（ViTai GF225，使用 vitai 类型 publisher）
+  # pyvitaisdk 做实时标记点检测（见 vitai_camera_publisher.py）
   usb_camera_publisher:
     - camera_name: 'left_gripper_camera_1'
-      camera_type: 'gelsight'   # ← 按实际修改（gelsight 或 MCTac）
+      camera_type: 'vitai'   # ViTai GF225 左侧传感器
       fps: 24
       vr_server_ip: *vr_server_ip
       vr_server_port: ${task.publisher.vr_server_port}
       dimension: 2
       marker_vis_rotation_angle: 90
+      sensor_type_str: 'GF225'
+      calib_frame_count: 30
       cpu_core_id:
         - 11
         - 12
         - 13
     - camera_name: 'left_gripper_camera_2'
-      camera_type: 'MCTac'      # ← 按实际修改
+      camera_type: 'vitai'   # ViTai GF225 右侧传感器
       fps: 24
       vr_server_ip: *vr_server_ip
       vr_server_port: ${task.publisher.vr_server_port}
       dimension: 2
-      image_rotation: 0
       marker_vis_rotation_angle: 0
+      sensor_type_str: 'GF225'
+      calib_frame_count: 30
       cpu_core_id:
         - 14
 
@@ -155,8 +173,9 @@ dataset:
 # ============================================================
 env_runner:
   _target_: reactive_diffusion_policy.env_runner.real_runner.RealRunner
+  output_dir: ${hydra:runtime.output_dir}
   eval_episodes: 10
-  max_duration_time: 30
+  max_duration_time: 90  # 每集最长运行时间 (秒)，训练数据约 29s，部署移动较慢需更长时间
   tcp_action_update_interval: 16
   gripper_action_update_interval: 16
   tcp_pos_clip_range:              # TCP 位置安全限制（根据实际工作空间修改！）
@@ -174,6 +193,9 @@ env_runner:
   dataset_obs_temporal_downsample_ratio: ${dataset_obs_temporal_downsample_ratio}
   downsample_extended_obs: ${eval:'${obs_temporal_downsample_ratio}!=${dataset_obs_temporal_downsample_ratio}'}
   task_name: ${task_name}
+  # 夹爪单位换算参数（训练数据为 ViTai 电机位置 0~12180，真机 API 期望米 0~0.130）
+  gripper_close_pos: 12180.0
+  gripper_max_width_m: 0.130
   transform_params: ${task.transforms}
   shape_meta: *shape_meta
   use_latent_action_with_rnn_decoder: True
@@ -196,25 +218,24 @@ env_runner:
     data_processing_params:
       mode: 'single_arm_two_realsense_two_tactile'  # 单臂+腕部相机+两个触觉
       pca_param_dict:
-        # 训练数据的触觉传感器为 ViTai GF225（81 markers × 2 = 162 维），
-        # 必须使用匹配的 PCA 矩阵（162→15），而非 GelSight（63 markers × 2 = 126 维）的矩阵。
-        # 使用错误矩阵会导致 pca_reduction() 抛出 ValueError，
-        # 进而 fallback 返回原始 162 维数据，被 pre_process_obs 截断为前 15 个原始坐标值，
-        # 而非真正的 PCA embedding，导致模型接收到语义完全错误的触觉输入。
+        # 使用 Dobot 数据集训练的 PCA 矩阵（data/PCA_Dobot/），
+        # 传感器为 ViTai GF225（81 markers × 2 = 162 维，降至 15 维）
+        # GelSight key → left_gripper_camera_1 → pca_transform_matrix_left
+        # McTac   key → left_gripper_camera_2 → pca_transform_matrix_right
         GelSight:
           n_components: 15
           normalize: False
           mode: 'Eval'
           store: False
-          transformation_matrix_path: 'data/PCA_vitai_gf225/pca_transform_matrix_left.npy'
-          mean_matrix_path: 'data/PCA_vitai_gf225/pca_mean_matrix_left.npy'
+          transformation_matrix_path: 'data/PCA_Dobot/pca_transform_matrix_left.npy'
+          mean_matrix_path: 'data/PCA_Dobot/pca_mean_matrix_left.npy'
         McTac:
           n_components: 15
           normalize: False
           mode: 'Eval'
           store: False
-          transformation_matrix_path: 'data/PCA_vitai_gf225/pca_transform_matrix_left.npy'
-          mean_matrix_path: 'data/PCA_vitai_gf225/pca_mean_matrix_left.npy'
+          transformation_matrix_path: 'data/PCA_Dobot/pca_transform_matrix_right.npy'
+          mean_matrix_path: 'data/PCA_Dobot/pca_mean_matrix_right.npy'
       use_6d_rotation: True
       marker_dimension: 2
       debug: False

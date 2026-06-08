@@ -24,6 +24,7 @@ class RealsenseCameraPublisher(Node):
                  camera_name: str = 'camera_base',
                  rgb_resolution: tuple = (640, 480),
                  exposure: int = 120,
+                 gain: int = 0,
                  white_balance: int = 5900,  # 2800-6500
                  depth_resolution: tuple = (640, 480),
                  fps: int = 30,
@@ -45,6 +46,7 @@ class RealsenseCameraPublisher(Node):
         self.fps = fps
         self.rgb_resolution = rgb_resolution
         self.exposure = exposure
+        self.gain = gain
         self.white_balance = white_balance
         self.depth_resolution = depth_resolution
         self.random_sample_point_num = random_sample_point_num
@@ -88,6 +90,8 @@ class RealsenseCameraPublisher(Node):
         exposure: (1, 10000) 100us unit. (0.1 ms, 1/10000s)
         gain: (0, 128)
         """
+        if self.color_sensor is None:
+            return  # D405 等无独立 color sensor 的型号，跳过曝光设置
 
         if exposure is None and gain is None:
             # auto exposure
@@ -101,6 +105,8 @@ class RealsenseCameraPublisher(Node):
                 self.color_sensor.set_option(rs.option.gain, gain)
 
     def set_white_balance(self, white_balance=None):
+        if self.color_sensor is None:
+            return  # D405 等无独立 color sensor 的型号，跳过白平衡设置
         if white_balance is None:
             self.color_sensor.set_option(rs.option.enable_auto_white_balance, 1.0)
         else:
@@ -146,11 +152,17 @@ class RealsenseCameraPublisher(Node):
         self.depth_scale = self.depth_sensor.get_depth_scale()
 
         # report global time
-        # https://github.com/IntelRealSense/librealsense/pull/3909
-        self.color_sensor = device.first_color_sensor()
-        self.color_sensor.set_option(rs.option.global_time_enabled, 1)
+        # D405 等少数型号没有独立 color sensor，first_color_sensor() 会抛 RuntimeError，
+        # 此时跳过 global_time_enabled 设置即可，时间戳精度略有影响但不影响正常使用。
+        try:
+            self.color_sensor = device.first_color_sensor()
+            self.color_sensor.set_option(rs.option.global_time_enabled, 1)
+        except RuntimeError:
+            logger.warning(f"[{self.camera_name}] first_color_sensor() 不支持（D405 等型号），"
+                           "跳过 global_time_enabled 设置。")
+            self.color_sensor = None
         # realsense exposure
-        self.set_exposure(exposure=self.exposure, gain=0)
+        self.set_exposure(exposure=self.exposure, gain=self.gain)
         # realsense white balance
         self.set_white_balance(white_balance=self.white_balance)
 
@@ -205,21 +217,18 @@ class RealsenseCameraPublisher(Node):
         Publish color image
         """
         color_image = copy.deepcopy(np.asanyarray(color_frame.get_data()))
-        success, encoded_image = cv2.imencode('.jpg', color_image)
-        
-        # Fill the message
+
+        # Fill the message with raw BGR8 data so that rviz2 / subscribers
+        # can decode it correctly.  The old code stored JPEG-compressed bytes
+        # while keeping encoding="bgr8", which caused a size mismatch error.
         msg = Image()
         msg.header.stamp = self.convert_to_system_timestamp(camera_timestamp).to_msg()
         msg.header.frame_id = "camera_color_frame"
         msg.height, msg.width, _ = color_image.shape
         msg.encoding = "bgr8"
+        msg.is_bigendian = False
         msg.step = msg.width * 3
-        if success:
-            image_bytes = encoded_image.tobytes()
-            msg.data = image_bytes
-        else:
-            logger.debug('fail to image encoding!')
-            msg.data = color_image.tobytes()
+        msg.data = color_image.tobytes()
         
         # msg = numpy_to_image(color_image, "bgr8")
         self.color_publisher_.publish(msg)

@@ -35,6 +35,7 @@ class RealImageTactileDataset(BaseImageDataset):
                  relative_action=False,
                  relative_tcp_obs_for_relative_action=True,
                  transform_params=None,
+                 load_into_memory=False,
                  ):
         assert os.path.isdir(dataset_path)
 
@@ -62,10 +63,19 @@ class RealImageTactileDataset(BaseImageDataset):
         # 最终合并，只从 zarr 加载这些 key
         zarr_load_keys = set(rgb_keys + lowdim_keys + extended_rgb_keys + extended_lowdim_keys + ['action'])
         zarr_load_keys = list(filter(lambda key: "wrt" not in key, zarr_load_keys))
-        # 使用 create_from_path 直接从磁盘按需读取（lazy），避免大数据集一次性全部加载进内存导致 OOM
-        # copy_from_path 会将所有数据解压缩后全部加载进 RAM（200k帧图像约 46GB），内存不足时会报 MemoryError
-        replay_buffer = ReplayBuffer.create_from_path(
-            zarr_path, mode='r')
+
+        if load_into_memory:
+            # 将指定 key 全部读入 RAM（numpy 字典），随机访问无需解压 chunk，速度极快。
+            # AT 阶段无图像输入，低维数据仅几十 MB，强烈推荐开启。
+            # LDP 阶段若图像数据量大（>可用内存），请保持 False。
+            print(f"[Dataset] load_into_memory=True，正在将数据载入内存（keys={list(zarr_load_keys)}）...")
+            replay_buffer = ReplayBuffer.copy_from_path(
+                zarr_path, keys=zarr_load_keys)
+            print("[Dataset] 数据已全部载入内存。")
+        else:
+            # 直接从磁盘按需读取（lazy），避免大数据集一次性全部加载进内存导致 OOM
+            replay_buffer = ReplayBuffer.create_from_path(
+                zarr_path, mode='r')
 
         if delta_action:
             # replace action as relative to previous frame

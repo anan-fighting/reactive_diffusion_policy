@@ -8,12 +8,13 @@ eval_sim.py
 
 使用方法：
 ----------
-CUDA_VISIBLE_DEVICES=0 python eval_sim.py \
+# 基于UMI数据测试
+CUDA_VISIBLE_DEVICES=0 python eval_sim_umi.py \
     --config-name train_latent_diffusion_unet_real_image_workspace \
     task=umi_rdp_image_tactile_emb_ldp_24fps \
     task.dataset_path=data/hf_dataset/dataset_mini/umi_rdp_zarr \
-    +ckpt_path="data/outputs/2026.05.14/15.09.20_train_latent_diffusion_unet_image_umi_rdp_image_tactile_emb_ldp_24fps_0514150913/checkpoints/epoch-0110-train_loss-0.121.ckpt" \
-    +at_load_dir="data/outputs/2026.05.12/18.08.58_train_vae_umi_rdp_image_tactile_emb_at_24fps_0512180857/checkpoints/epoch-0600-train_loss-0.001908.ckpt" \
+    +ckpt_path="data/outputs/2026.05.14_umi_ldp/15.09.20_train_latent_diffusion_unet_image_umi_rdp_image_tactile_emb_ldp_24fps_0514150913/checkpoints/epoch-0110-train_loss-0.121.ckpt" \
+    +at_load_dir="data/outputs/2026.05.12_umi_at/18.08.58_train_vae_umi_rdp_image_tactile_emb_at_24fps_0512180857/checkpoints/epoch-0600-train_loss-0.001908.ckpt" \
     hydra.run.dir="data/outputs/eval_sim" \
     +episode_idx=0 \
     +output_fig="eval_sim_result.png"

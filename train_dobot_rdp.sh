@@ -30,9 +30,9 @@ CUDA_VISIBLE_DEVICES=${AT_GPU_ID} python train.py \
     at=at_dobot_rdp \
     logging.mode=${LOGGING_MODE} \
     dataloader.batch_size=1024 \
-    dataloader.num_workers=8 \
+    dataloader.num_workers=16 \
     val_dataloader.batch_size=1024 \
-    val_dataloader.num_workers=8
+    val_dataloader.num_workers=16
 
 # ── 查找 loss 最小的 AT checkpoint（topk ckpt，非 latest.ckpt）────
 echo ""
@@ -65,7 +65,7 @@ CUDA_VISIBLE_DEVICES=${LDP_GPUS} accelerate launch --num_processes=${LDP_NUM_GPU
     task.dataset_path=${DATASET_PATH} \
     task.name=dobot_rdp_image_tactile_emb_ldp_24fps_${TIMESTAMP} \
     at=at_dobot_rdp \
-    at_load_dir=${AT_LOAD_DIR} \
+    "at_load_dir=${AT_LOAD_DIR}" \
     logging.mode=${LOGGING_MODE}
 
 echo ""

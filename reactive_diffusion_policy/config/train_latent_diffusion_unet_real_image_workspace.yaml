@@ -177,20 +177,20 @@ dataloader:
   batch_size: 64
   # timm
   # batch_size: 32
-  num_workers: 8
+  num_workers: 0
   shuffle: True
-  pin_memory: True
-  persistent_workers: True
+  pin_memory: False
+  persistent_workers: False
 
 val_dataloader:
   # ResNet
   batch_size: 64
   # timm
   # batch_size: 32
-  num_workers: 8
+  num_workers: 0
   shuffle: False
-  pin_memory: True
-  persistent_workers: True
+  pin_memory: False
+  persistent_workers: False
 
 optimizer:
   _target_: torch.optim.AdamW

@@ -65,7 +65,11 @@ class DeviceMappingServer:
                 The device id of the usb camera is
                 the index in its first device path
                 '''
-                if (current_camera_name and ('USB camera' in current_camera_name or 'GelSight' in current_camera_name)
+                if (current_camera_name and ('USB camera' in current_camera_name
+                                            or 'GelSight' in current_camera_name
+                                            or 'ViTai' in current_camera_name
+                                            or 'VT ' in current_camera_name
+                                            or 'GF225' in current_camera_name)
                         and '/dev/video' in line and not found_video_path):
                     device_id = line.split('/')[-1]
                     camera_ids.append(int(device_id.replace('video', '')))

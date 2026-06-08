@@ -18,8 +18,8 @@ tactile_right_warped_image.mp4 中提取 2D 标记点坐标，并对位移场做
   initial_marker_right.npy          -> left_gripper2_initial_marker
   realsense_wrist_rgb.mp4           -> left_wrist_img   (resize 到 240×320)
   realsense_top_rgb.mp4             -> external_img     (resize 到 240×320)
-  tactile_left_warped_image.mp4     -> left_gripper1_img (保持原始尺寸 240×240)
-  tactile_right_warped_image.mp4    -> left_gripper2_img (保持原始尺寸 240×240)
+  tactile_left.mp4                  -> left_gripper1_img (保持原始尺寸 240×240) [新版命名]
+  tactile_right.mp4                 -> left_gripper2_img (保持原始尺寸 240×240) [新版命名]
   timestamps.npy                    -> timestamp
   derived from above                -> action (next frame xyz + gripper)
   derived from above                -> target (current frame xyz + gripper)
@@ -36,8 +36,8 @@ tactile_right_warped_image.mp4 中提取 2D 标记点坐标，并对位移场做
   四元数由 scipy 转为 6D 旋转表示，最终 left_robot_tcp_pose 为 (N, 9)。
 
 用法：
-  python scripts/convert_dobot_to_zarr.py \\
-      --src /home/zzw/teleop_data/Dobot_peg_in_hole \\
+  python scripts/convert_dobot_to_zarr.py \
+      --src /home/zzw/teleop_data/Dobot_peg_in_hole \
       --dst data/hf_dataset/dataset_mini/dobot_peg_in_hole_zarr
 """
 
@@ -137,9 +137,11 @@ def process_episode(ep_dir: str):
     # realsense_top_rgb.mp4    (640×480) → resize 到 240×320
     external_img = read_video_frames(os.path.join(ep_dir, 'realsense_top_rgb.mp4'),
                                      target_h=240, target_w=320)
-    # tactile (240×240) → 保持原始尺寸，target_h/w=None 表示不 resize
-    tactile_l    = read_video_frames(os.path.join(ep_dir, 'tactile_left_warped_image.mp4'))
-    tactile_r    = read_video_frames(os.path.join(ep_dir, 'tactile_right_warped_image.mp4'))
+    # tactile (240×240) → 保持原始尺寸
+    tactile_l_path = os.path.join(ep_dir, 'tactile_left.mp4')
+    tactile_r_path = os.path.join(ep_dir, 'tactile_right.mp4')
+    tactile_l    = read_video_frames(tactile_l_path)
+    tactile_r    = read_video_frames(tactile_r_path)
 
     # ── 以所有数据中最短的帧数为基准 N，统一截断 ──────────────────────────────
     all_lens = {
@@ -154,8 +156,8 @@ def process_episode(ep_dir: str):
         'initial_marker_right':       len(init_marker_r),
         'realsense_wrist_rgb':        len(wrist_img),
         'realsense_top_rgb':          len(external_img),
-        'tactile_left_warped_image':  len(tactile_l),
-        'tactile_right_warped_image': len(tactile_r),
+        'tactile_left':  len(tactile_l),
+        'tactile_right': len(tactile_r),
     }
     N = min(all_lens.values())
     if len(set(all_lens.values())) > 1:
@@ -231,7 +233,7 @@ def main():
         """
     )
     parser.add_argument('--src', type=str,
-                        default='/home/zzw/teleop_data/Dobot_peg_in_hole',
+                        default='/home/zzw/teleop_data/Dobot_peg_in_hole_0604',
                         help='源数据集根目录（包含 episode_* 子文件夹）')
     parser.add_argument('--dst', type=str,
                         default='data/hf_dataset/dobot_peg_in_hole_zarr',

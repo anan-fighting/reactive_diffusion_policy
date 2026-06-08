@@ -38,6 +38,10 @@ def get_real_obs_dict(
             if 'pose' in key and shape == (2,):
                 # take X,Y coordinates
                 this_data_in = this_data_in[...,[0,1]]
+            # 按 shape_meta 声明的维度截取，避免真机发布的高维数据（如 9D tcp_pose）
+            # 与训练时使用的低维数据（如 3D xyz）不匹配
+            if this_data_in.shape[-1] > shape[0]:
+                this_data_in = this_data_in[..., :shape[0]]
             obs_dict_np[key] = this_data_in
     return obs_dict_np
 

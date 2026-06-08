@@ -52,6 +52,10 @@ dataset:
 
   # for calculating the normalizer parameters for the latent action
   use_latent_action_before_vq: False
+  # LDP 所需图像（left_wrist_img 约 6.9GB）+ 低维数据全部载入内存，
+  # 消除随机访问 zarr chunk 的解压开销，大幅提升 DataLoader 速度。
+  # 服务器内存充足（>40GB 可用）时强烈推荐开启。
+  load_into_memory: True
   at:
     _target_: reactive_diffusion_policy.model.vae.model.VAE
     shape_meta: ${shape_meta}
@@ -74,6 +78,7 @@ dataset:
 # 真机部署时使用
 env_runner:
   _target_: reactive_diffusion_policy.env_runner.real_runner.RealRunner
+  output_dir: ${hydra:runtime.output_dir}
   eval_episodes: 10
   max_duration_time: 30
   tcp_action_update_interval: 16

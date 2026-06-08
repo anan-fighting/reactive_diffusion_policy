@@ -20,6 +20,7 @@ from reactive_diffusion_policy.real_world.publisher.realsense_camera_publisher i
 from reactive_diffusion_policy.real_world.publisher.usb_camera_publisher import UsbCameraPublisher
 from reactive_diffusion_policy.real_world.publisher.gelsight_camera_publisher import GelsightCameraPublisher
 from reactive_diffusion_policy.real_world.publisher.mctac_camera_publisher import MCTacCameraPublisher
+from reactive_diffusion_policy.real_world.publisher.vitai_camera_publisher import VitaiCameraPublisher
 from reactive_diffusion_policy.real_world.device_mapping.device_mapping_server import DeviceToTopic, DeviceMappingServer
 
 # add this to prevent assigning too may threads when using numpy
@@ -59,6 +60,8 @@ class CameraWorker:
             self.camera_publisher = GelsightCameraPublisher(**camera_config)
         elif camera_config.camera_type == 'MCTac':
             self.camera_publisher = MCTacCameraPublisher(**camera_config)
+        elif camera_config.camera_type == 'vitai':
+            self.camera_publisher = VitaiCameraPublisher(**camera_config)
         else:
             raise NotImplementedError
     def handle_signal(self, signum, frame):
